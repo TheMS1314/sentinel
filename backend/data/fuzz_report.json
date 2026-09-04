@@ -1,0 +1,30 @@
+{
+  "total": 187,
+  "by_category": {
+    "injection_phrasing": {
+      "total": 96,
+      "approved": 0,
+      "held": 6,
+      "blocked": 90
+    },
+    "amount_boundary": {
+      "total": 40,
+      "approved": 6,
+      "held": 21,
+      "blocked": 13
+    },
+    "category_swap": {
+      "total": 11,
+      "approved": 0,
+      "held": 2,
+      "blocked": 9
+    },
+    "combined_attack": {
+      "total": 40,
+      "approved": 0,
+      "held": 0,
+      "blocked": 40
+    }
+  },
+  "violations": []
+}

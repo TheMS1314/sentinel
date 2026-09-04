@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-09-04T07:29:03.088389+00:00",
+  "llm_provider": "openrouter",
+  "total_cases": 89,
+  "overall_accuracy": 1.0,
+  "per_class": {
+    "APPROVE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 23
+    },
+    "HOLD": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 14
+    },
+    "BLOCK": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 52
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "APPROVE",
+      "HOLD",
+      "BLOCK"
+    ],
+    "matrix": [
+      [
+        23,
+        0,
+        0
+      ],
+      [
+        0,
+        14,
+        0
+      ],
+      [
+        0,
+        0,
+        52
+      ]
+    ]
+  },
+  "by_decider": {
+    "rule_engine": {
+      "accuracy": 1.0,
+      "n": 73
+    },
+    "llm_reasoner": {
+      "accuracy": 1.0,
+      "n": 16
+    }
+  },
+  "misses": []
+}

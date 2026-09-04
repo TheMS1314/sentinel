@@ -1,0 +1,59 @@
+{
+  "total_cases": 500,
+  "overall_accuracy": 1.0,
+  "per_class": {
+    "APPROVE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 425
+    },
+    "HOLD": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20
+    },
+    "BLOCK": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 55
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "APPROVE",
+      "HOLD",
+      "BLOCK"
+    ],
+    "matrix": [
+      [
+        425,
+        0,
+        0
+      ],
+      [
+        0,
+        20,
+        0
+      ],
+      [
+        0,
+        0,
+        55
+      ]
+    ]
+  },
+  "by_decider": {
+    "rule_engine": {
+      "accuracy": 1.0,
+      "n": 485
+    },
+    "llm_reasoner": {
+      "accuracy": 1.0,
+      "n": 15
+    }
+  },
+  "misses": []
+}

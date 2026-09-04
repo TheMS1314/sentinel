@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports:
+      - "5432:5432"
+    volumes:
+      - sentinel_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Initialize the shared database schema exactly once before
+  # either backend replica starts.
+  db-init:
+    build: ./backend
+    container_name: sentinel-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+    command: python -c "from app.models.db import init_db; init_db()"
+
+  # Two backend replicas sharing the same Postgres and Redis.
+  backend1:
+    build: ./backend
+    container_name: sentinel-backend1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      REDIS_URL: redis://redis:6379/0
+      CACHE_BACKEND: redis
+      QUEUE_BACKEND: redis
+      SENTINEL_INSTANCE_ID: backend1
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+
+  backend2:
+    build: ./backend
+    container_name: sentinel-backend2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
+      REDIS_URL: redis://redis:6379/0
+      CACHE_BACKEND: redis
+      QUEUE_BACKEND: redis
+      SENTINEL_INSTANCE_ID: backend2
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+
+  nginx:
+    image: nginx:alpine
+    container_name: sentinel-nginx
+    depends_on:
+      - backend1
+      - backend2
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  sentinel_pgdata:

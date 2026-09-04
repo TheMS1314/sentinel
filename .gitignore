@@ -1,0 +1,39 @@
+# Environment / secrets
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/.tox/
+**/.venv/
+**/venv/
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/.vite/
+**/coverage/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
