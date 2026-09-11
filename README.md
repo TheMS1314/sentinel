@@ -6,7 +6,7 @@ The key design idea is simple:
 
 > **An AI agent may be autonomous, but its payment authority should remain bounded, explainable, and auditable.**
 
-Sentinel is built for the Razorpay AI Builder Buildathon, Agentic Commerce track.
+Sentinel is built for the Razorpay AI Builder Buildathon, Track 1: AI Growth & Agentic Commerce.
 
 ---
 
@@ -67,7 +67,7 @@ Razorpay test-mode gateway
 
 ### Why the LLM is not the first layer
 
-A deterministic amount or category violation does not become safer because an LLM was asked to rediscover it. The rule engine is faster, reproducible, auditable, and has no model hallucination risk. The LLM is reserved for cases where the deterministic layer cannot make a sufficiently confident judgment about intent drift.
+A deterministic amount or category violation does not become safer because an LLM was asked to rediscover it. The rule engine is fast, reproducible, auditable, and does not depend on probabilistic model behavior. The LLM is reserved for cases where the deterministic layer cannot make a sufficiently confident judgment about intent drift.
 
 ---
 
@@ -87,7 +87,7 @@ Each agent has an isolated, versioned policy containing:
 | `active` | Whether the policy version is active |
 | `version` | Monotonic policy version |
 
-The demo policy for `agent_demo_1` is:
+An example policy configuration is:
 
 ```text
 max_amount_per_txn = ₹2000
@@ -341,12 +341,12 @@ Main UI areas:
 - **Scenario Runner** — well-behaved/adversarial simulations, sync/async execution.
 - **Queue Monitor** — async job visibility.
 - **HITL controls** — resolve `HOLD` transactions.
-
-The dashboard is not a static mock: it retrieves data from the protected API and was visually verified in the current browser-based workflow.
+- 
+The dashboard is backed by the Sentinel API and supports live transaction, policy, evaluation, scenario, queue, and HITL workflows.
 
 ---
 
-## 12. Demo scenarios
+## 12. Scenario coverage
 
 The built-in purchasing agent supports:
 
@@ -360,41 +360,9 @@ prompt_injection
 merchant_swap
 ```
 
-The demo reset script creates isolated agents so each adversarial scenario remains easy to inspect without contaminating the flagship agent's history.
+Scenario execution uses isolated agent histories so behavioral and transaction context does not leak between agents.
 
-### Clean flagship agent
-
-`agent_demo_1` is intentionally only the well-behaved scenario:
-
-```text
-QuickKirana  ₹243.23  APPROVE
-FreshMart    ₹623.64  APPROVE
-GreenGrocer  ₹358.20  APPROVE
-FreshMart    ₹788.92  HOLD  (velocity)
-```
-
-This produces the clean dashboard state:
-
-```text
-APPROVE  3
-HOLD     1
-BLOCK    0
-TOTAL    4
-```
-
-The complete seeded database contains 18 transactions across the flagship and adversarial demo agents:
-
-```text
-APPROVE  6
-HOLD     2
-BLOCK   10
-TOTAL   18
-```
-
-### Important recording rule
-
-Do not repeatedly run a scenario against a seeded agent immediately before recording. The policy's velocity limit is real and history-dependent, so new attempts can legitimately become `HOLD`. Use the already-seeded adversarial agents for stable recording frames, or reset again before a new live run.
-
+The built-in scenarios exercise the payment trust boundary across normal behavior, policy violations, behavioral anomalies, adversarial instructions, and merchant restrictions.
 ---
 
 ## 13. Evaluation
@@ -416,7 +384,19 @@ llm_reasoner: 16/16
 misses: 0
 ```
 
-In the current verified run, the live reasoning provider was OpenRouter using the configured Nemotron free model endpoint. This should be described as **100% on the 89-case golden benchmark**, not as 100% real-world accuracy.
+
+### Evaluation progression
+
+Sentinel's evaluation results improved across successive validation iterations as implementation bugs, adversarial edge cases, and model-behavior edge cases were identified and addressed.
+
+| Evaluation | Earlier result | Intermediate result | Latest verified result |
+|---|---:|---:|---:|
+| Golden dataset | 91.0% | — | **100.0% (89/89)** |
+| Hard/adversarial Tier 2 | 87.5% | 93.8% | **100.0% (16/16)** |
+
+The progression reflects iterative engineering and regression testing rather than a claim of general real-world accuracy. The latest results are the current verified benchmark runs, while earlier values are retained to show the development trajectory.
+
+For the latest verified runs, the Golden dataset achieved **89/89** and the Hard Tier-2 dataset achieved **16/16** using the live OpenRouter reasoning provider.
 
 ### Prevalence-weighted synthetic set
 
@@ -424,7 +404,9 @@ The repository also contains a 500-case synthetic prevalence-weighted evaluation
 
 ### Hard/adversarial Tier 2
 
-The current verified 16-case hard/adversarial Tier-2 run scored **93.8% (15/16)** using the live OpenRouter provider. The rule-engine portion was **11/11 (100%)** and the LLM-reasoner portion was **4/5 (80%)**. The single miss (`hard_012`) was a conservative `HOLD` for the ambiguous intent "take care of the usual order." This tier exists to expose non-trivial semantic failure modes rather than to maximize a headline score.
+The current verified 16-case hard/adversarial Tier-2 run scored **100.0% (16/16)** using the live OpenRouter provider. The rule-engine portion was **11/11 (100%)** and the LLM-reasoner portion was **5/5 (100%)**, with **0 misses**.
+
+This tier is intentionally designed to expose non-trivial semantic and adversarial failure modes rather than to maximize a headline score. Live LLM results can vary between runs, so this result should be understood as the outcome of the current verified evaluation run, not a claim of general real-world LLM accuracy.
 
 ### Fuzz testing
 
@@ -521,17 +503,17 @@ http://localhost:5173/
 
 ---
 
-## 17. Safe demo reset
+## 17. Database reset and environment safety
 
-There may be a Postgres.app instance on the host machine using port 5432 at the same time as Docker's published PostgreSQL port. Running the seed module from the host can therefore target the wrong PostgreSQL process.
+A local Postgres.app instance can use port 5432 at the same time as Docker's PostgreSQL service. Running database initialization from the host can therefore target a different PostgreSQL process than the Docker-backed application.
 
-**Safest demo reset for the Docker-backed dashboard:**
+For the Docker deployment, run database reset and seed operations inside the backend container:
 
 ```bash
 docker compose exec backend1 python -m app.demo.reset_and_seed
 ```
 
-This runs the seed code inside the backend container, where `postgres:5432` unambiguously identifies the Docker PostgreSQL service.
+This ensures the seed operation uses the Docker PostgreSQL service configured for the application.
 
 Afterward verify:
 
@@ -616,25 +598,10 @@ The strongest defensible framing is:
 
 ---
 
-## 21. Recommended demo narrative
-
-The cleanest recording sequence is:
-
-1. Start on `agent_demo_1` and show 3 approvals + 1 hold.
-2. Show the policy controls.
-3. Open one transaction to expose the reason and decision layer.
-4. Use the agent selector to switch to a pre-seeded adversarial agent.
-5. Show prompt-injection or amount-creep evidence rather than creating unnecessary new history.
-6. Demonstrate one `HOLD` resolution if useful.
-7. Show Evaluation: **89 cases / 100.0%** and read the value live.
-8. Show the current test result: **113 passed**.
-9. Disclose AP2 signature verification and per-instance rate limiting before the close.
-
-This sequence is stable, visually rich, and avoids accidental demo-state corruption.
 
 ---
 
-## 22. Repository map
+## 21. Repository map
 
 ```text
 backend/
