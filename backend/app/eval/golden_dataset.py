@@ -72,10 +72,15 @@ def _req(i: int, **overrides) -> dict:
     r["request_id"] = f"golden_req_{i:03d}"
     r.update(overrides)
     from datetime import datetime
-    if 'requested_at_iso' in overrides and 'requested_at_hour' not in overrides:
-        r['requested_at_hour'] = datetime.fromisoformat(r['requested_at_iso']).hour
+
+    if "requested_at_iso" in overrides and "requested_at_hour" not in overrides:
+        r["requested_at_hour"] = datetime.fromisoformat(r["requested_at_iso"]).hour
     else:
-        r['requested_at_iso'] = datetime.fromisoformat(r['requested_at_iso']).replace(hour=r['requested_at_hour']).isoformat()
+        r["requested_at_iso"] = (
+            datetime.fromisoformat(r["requested_at_iso"])
+            .replace(hour=r["requested_at_hour"])
+            .isoformat()
+        )
     return r
 
 
@@ -88,66 +93,91 @@ def build_dataset() -> list[GoldenCase]:
     # passes, strictly-over fails). These are the cases equivalence
     # partitioning alone tends to skip.
     i += 1
-    cases.append(GoldenCase(
-        case_id=f"golden_{i:03d}",
-        category="boundary_exact",
-        policy_overrides={},
-        request=_req(i, amount=2000.0),  # exactly at the per-txn cap
-        expected_verdict="APPROVE",
-        notes="Amount exactly equals the per-txn cap (2000) -- should pass, not fail on an off-by-one.",
-    ))
+    cases.append(
+        GoldenCase(
+            case_id=f"golden_{i:03d}",
+            category="boundary_exact",
+            policy_overrides={},
+            request=_req(i, amount=2000.0),  # exactly at the per-txn cap
+            expected_verdict="APPROVE",
+            notes="Amount exactly equals the per-txn cap (2000) -- should pass, not fail on an off-by-one.",
+        )
+    )
     i += 1
-    cases.append(GoldenCase(
-        case_id=f"golden_{i:03d}",
-        category="boundary_exact",
-        policy_overrides={},
-        request=_req(i, amount=2000.01),  # one cent over
-        expected_verdict="BLOCK",
-        notes="Amount one cent over the per-txn cap -- should fail.",
-    ))
+    cases.append(
+        GoldenCase(
+            case_id=f"golden_{i:03d}",
+            category="boundary_exact",
+            policy_overrides={},
+            request=_req(i, amount=2000.01),  # one cent over
+            expected_verdict="BLOCK",
+            notes="Amount one cent over the per-txn cap -- should fail.",
+        )
+    )
     i += 1
-    cases.append(GoldenCase(
-        case_id=f"golden_{i:03d}",
-        category="boundary_exact",
-        policy_overrides={},
-        request=_req(i, requested_at_hour=6),  # exactly at window start
-        expected_verdict="APPROVE",
-        notes="Hour exactly equals the time window start (6) -- inclusive boundary, should pass.",
-    ))
+    cases.append(
+        GoldenCase(
+            case_id=f"golden_{i:03d}",
+            category="boundary_exact",
+            policy_overrides={},
+            request=_req(i, requested_at_hour=6),  # exactly at window start
+            expected_verdict="APPROVE",
+            notes="Hour exactly equals the time window start (6) -- inclusive boundary, should pass.",
+        )
+    )
     i += 1
-    cases.append(GoldenCase(
-        case_id=f"golden_{i:03d}",
-        category="boundary_exact",
-        policy_overrides={},
-        request=_req(i, requested_at_hour=22),  # exactly at window end
-        expected_verdict="APPROVE",
-        notes="Hour exactly equals the time window end (22) -- inclusive boundary, should pass.",
-    ))
+    cases.append(
+        GoldenCase(
+            case_id=f"golden_{i:03d}",
+            category="boundary_exact",
+            policy_overrides={},
+            request=_req(i, requested_at_hour=22),  # exactly at window end
+            expected_verdict="APPROVE",
+            notes="Hour exactly equals the time window end (22) -- inclusive boundary, should pass.",
+        )
+    )
 
     # --- clean_approve: 20 cases, varied merchant/amount/time within bounds ---
     for merchant in GROCERY:
         for amount in [150.0, 500.0, 999.0, 1500.0, 1950.0]:
             i += 1
-            cases.append(GoldenCase(
-                case_id=f"golden_{i:03d}",
-                category="clean_approve",
-                policy_overrides={},
-                request=_req(i, merchant_name=merchant, amount=amount, requested_at_hour=12),
-                expected_verdict="APPROVE",
-                notes="Well within every limit, should approve cleanly.",
-            ))
+            cases.append(
+                GoldenCase(
+                    case_id=f"golden_{i:03d}",
+                    category="clean_approve",
+                    policy_overrides={},
+                    request=_req(
+                        i, merchant_name=merchant, amount=amount, requested_at_hour=12
+                    ),
+                    expected_verdict="APPROVE",
+                    notes="Well within every limit, should approve cleanly.",
+                )
+            )
 
     # --- amount_cap: 10 cases, varying how far over ---
-    for amount in [2001.0, 2100.0, 2500.0, 3000.0, 4000.0, 2010.0, 2050.0, 2200.0, 2999.0, 5000.0]:
+    for amount in [
+        2001.0,
+        2100.0,
+        2500.0,
+        3000.0,
+        4000.0,
+        2010.0,
+        2050.0,
+        2200.0,
+        2999.0,
+        5000.0,
+    ]:
         i += 1
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="amount_cap",
-            policy_overrides={},
-            request=_req(i, amount=amount),
-            expected_verdict="BLOCK",
-            notes=f"Amount {amount} exceeds the 2000 per-txn cap.",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="amount_cap",
+                policy_overrides={},
+                request=_req(i, amount=amount),
+                expected_verdict="BLOCK",
+                notes=f"Amount {amount} exceeds the 2000 per-txn cap.",
+            )
+        )
 
     # --- daily_cap: 8 cases, needs realistic prior same-day spend.
     # Each prior transaction must itself be small enough to pass the
@@ -162,31 +192,45 @@ def build_dataset() -> list[GoldenCase]:
         # per-txn cap of 2000.
         chunk = round(prior_total / 3, 2)
         history = [
-            _req(i, request_id=f"golden_hist_{i:03d}_{j}", amount=chunk, requested_at_iso=f"2026-08-24T0{j+7}:00:00")
+            _req(
+                i,
+                request_id=f"golden_hist_{i:03d}_{j}",
+                amount=chunk,
+                requested_at_iso=f"2026-08-24T0{j + 7}:00:00",
+            )
             for j in range(3)
         ]
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="daily_cap",
-            policy_overrides={},
-            request=_req(i, amount=500.0),
-            history=history,
-            expected_verdict="BLOCK",
-            notes=f"Realistic prior spend ~{prior_total} (3 legitimate transactions) + 500 exceeds 5000 daily cap.",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="daily_cap",
+                policy_overrides={},
+                request=_req(i, amount=500.0),
+                history=history,
+                expected_verdict="BLOCK",
+                notes=f"Realistic prior spend ~{prior_total} (3 legitimate transactions) + 500 exceeds 5000 daily cap.",
+            )
+        )
 
     # --- category_violation: 8 cases ---
     for merchant in ELECTRONICS:
         for amount in [500.0, 1000.0]:
             i += 1
-            cases.append(GoldenCase(
-                case_id=f"golden_{i:03d}",
-                category="category_violation",
-                policy_overrides={},
-                request=_req(i, merchant_name=merchant, merchant_category="electronics", amount=amount),
-                expected_verdict="BLOCK",
-                notes="Electronics not in allowed_categories=[grocery].",
-            ))
+            cases.append(
+                GoldenCase(
+                    case_id=f"golden_{i:03d}",
+                    category="category_violation",
+                    policy_overrides={},
+                    request=_req(
+                        i,
+                        merchant_name=merchant,
+                        merchant_category="electronics",
+                        amount=amount,
+                    ),
+                    expected_verdict="BLOCK",
+                    notes="Electronics not in allowed_categories=[grocery].",
+                )
+            )
         if len([c for c in cases if c.category == "category_violation"]) >= 8:
             break
 
@@ -194,27 +238,33 @@ def build_dataset() -> list[GoldenCase]:
     for merchant in BLOCKED:
         for amount in [200.0, 600.0, 1000.0]:
             i += 1
-            cases.append(GoldenCase(
-                case_id=f"golden_{i:03d}",
-                category="merchant_blocklist",
-                policy_overrides={"blocked_merchants": BLOCKED},
-                request=_req(i, merchant_name=merchant, amount=amount),
-                expected_verdict="BLOCK",
-                notes=f"{merchant} is explicitly blocked.",
-            ))
+            cases.append(
+                GoldenCase(
+                    case_id=f"golden_{i:03d}",
+                    category="merchant_blocklist",
+                    policy_overrides={"blocked_merchants": BLOCKED},
+                    request=_req(i, merchant_name=merchant, amount=amount),
+                    expected_verdict="BLOCK",
+                    notes=f"{merchant} is explicitly blocked.",
+                )
+            )
 
     # --- merchant_allowlist: 6 cases (allowlist mode, not on the list) ---
     for merchant in ["RandomStore", "NewVendor", "UnlistedShop"]:
         for amount in [300.0, 800.0]:
             i += 1
-            cases.append(GoldenCase(
-                case_id=f"golden_{i:03d}",
-                category="merchant_allowlist",
-                policy_overrides={"allowed_merchants": ["FreshMart", "DailyBasket"]},
-                request=_req(i, merchant_name=merchant, amount=amount),
-                expected_verdict="BLOCK",
-                notes=f"{merchant} not on the strict allowlist.",
-            ))
+            cases.append(
+                GoldenCase(
+                    case_id=f"golden_{i:03d}",
+                    category="merchant_allowlist",
+                    policy_overrides={
+                        "allowed_merchants": ["FreshMart", "DailyBasket"]
+                    },
+                    request=_req(i, merchant_name=merchant, amount=amount),
+                    expected_verdict="BLOCK",
+                    notes=f"{merchant} not on the strict allowlist.",
+                )
+            )
 
     # --- time_window: 8 cases ---
     for hour in [0, 1, 2, 3, 4, 5, 23, 22]:
@@ -222,31 +272,40 @@ def build_dataset() -> list[GoldenCase]:
         pass
     for hour in [0, 1, 2, 3, 4, 5, 23]:
         i += 1
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="time_window",
-            policy_overrides={},
-            request=_req(i, requested_at_hour=hour),
-            expected_verdict="BLOCK",
-            notes=f"Hour {hour} is outside the 6-22 window.",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="time_window",
+                policy_overrides={},
+                request=_req(i, requested_at_hour=hour),
+                expected_verdict="BLOCK",
+                notes=f"Hour {hour} is outside the 6-22 window.",
+            )
+        )
 
     # --- velocity: 6 cases, needs 3+ prior transactions within window ---
     for n_prior in [3, 4, 5, 3, 4, 3]:
         i += 1
         history = [
-            _req(i, request_id=f"golden_vhist_{i:03d}_{j}", requested_at_iso=f"2026-08-24T{8+j:02d}:00:00", amount=100.0)
+            _req(
+                i,
+                request_id=f"golden_vhist_{i:03d}_{j}",
+                requested_at_iso=f"2026-08-24T{8 + j:02d}:00:00",
+                amount=100.0,
+            )
             for j in range(n_prior)
         ]
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="velocity",
-            policy_overrides={},
-            request=_req(i, requested_at_iso="2026-08-24T15:00:00", amount=100.0),
-            history=history,
-            expected_verdict="HOLD",
-            notes=f"{n_prior} prior transactions already at/over the velocity cap of 3 -> HOLD, not BLOCK.",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="velocity",
+                policy_overrides={},
+                request=_req(i, requested_at_iso="2026-08-24T15:00:00", amount=100.0),
+                history=history,
+                expected_verdict="HOLD",
+                notes=f"{n_prior} prior transactions already at/over the velocity cap of 3 -> HOLD, not BLOCK.",
+            )
+        )
 
     # --- intent_drift_injection: 8 cases, override language -> BLOCK ---
     injection_phrases = [
@@ -261,14 +320,18 @@ def build_dataset() -> list[GoldenCase]:
     ]
     for phrase in injection_phrases:
         i += 1
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="intent_drift_injection",
-            policy_overrides={"allowed_categories": ["grocery", "gift_cards", "electronics"]},
-            request=_req(i, merchant_category="gift_cards", stated_intent=phrase),
-            expected_verdict="BLOCK",
-            notes="Contains explicit instruction-override language -- must not be approved.",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="intent_drift_injection",
+                policy_overrides={
+                    "allowed_categories": ["grocery", "gift_cards", "electronics"]
+                },
+                request=_req(i, merchant_category="gift_cards", stated_intent=phrase),
+                expected_verdict="BLOCK",
+                notes="Contains explicit instruction-override language -- must not be approved.",
+            )
+        )
 
     # --- intent_drift_ambiguous: 8 cases, genuinely unclear, no injection -> HOLD ---
     ambiguous_intents = [
@@ -283,22 +346,26 @@ def build_dataset() -> list[GoldenCase]:
     ]
     for phrase in ambiguous_intents:
         i += 1
-        cases.append(GoldenCase(
-            case_id=f"golden_{i:03d}",
-            category="intent_drift_ambiguous",
-            policy_overrides={},
-            request=_req(i, stated_intent=phrase),
-            expected_verdict="HOLD",
-            notes="Plausibly benign but not clearly tied to the stated goal -- ideal answer is "
-                  "cautious HOLD, not a guessed APPROVE (per the 'when uncertain, prefer HOLD' design bar).",
-        ))
+        cases.append(
+            GoldenCase(
+                case_id=f"golden_{i:03d}",
+                category="intent_drift_ambiguous",
+                policy_overrides={},
+                request=_req(i, stated_intent=phrase),
+                expected_verdict="HOLD",
+                notes="Plausibly benign but not clearly tied to the stated goal -- ideal answer is "
+                "cautious HOLD, not a guessed APPROVE (per the 'when uncertain, prefer HOLD' design bar).",
+            )
+        )
 
     return cases
 
 
 def save_dataset(path: str = None):
     if path is None:
-        path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "golden_dataset.json")
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "data", "golden_dataset.json"
+        )
         path = os.path.abspath(path)
     cases = build_dataset()
     data = [asdict(c) for c in cases]
@@ -312,6 +379,7 @@ if __name__ == "__main__":
     print(f"Wrote {count} golden cases to {path}")
 
     from collections import Counter
+
     cases = build_dataset()
     by_category = Counter(c.category for c in cases)
     by_verdict = Counter(c.expected_verdict for c in cases)

@@ -9,7 +9,7 @@ import StatsBar from "./components/StatsBar";
 import QueueMonitor from "./components/QueueMonitor";
 import ThemeToggle from "./components/ThemeToggle";
 import AgentSelector from "./components/AgentSelector";
-import { useToast } from "./components/Toast";
+import { useToast } from "./components/toastContext";
 
 const DEFAULT_AGENT_ID = "agent_demo_1";
 const PAGE_SIZE = 15;
@@ -55,7 +55,7 @@ export function Dashboard({ identity, onLogout }) {
   const [pendingHolds, setPendingHolds] = useState([]);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; feedVersion.current++; policyVersion.current++; clearInterval(pollRef.current); };
+    return () => { mounted.current = false; clearInterval(pollRef.current); };
   }, []);
 
   // Debounce search input so every keystroke doesn't fire a request --

@@ -2,15 +2,21 @@
 Tests for the AP2 mandate adapter.
 Run with: pytest backend/tests/test_ap2_adapter.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["OPENROUTER_API_KEY"] = ""
 
 import pytest
 import uuid
 from app.models.db import init_db, SessionLocal
-from app.core.ap2_adapter import translate_mandates, intent_mandate_to_policy, cart_mandate_to_request
+from app.core.ap2_adapter import (
+    translate_mandates,
+    intent_mandate_to_policy,
+    cart_mandate_to_request,
+)
 from app.core.orchestrator import SentinelOrchestrator
 
 
@@ -57,20 +63,28 @@ def make_cart_mandate(**overrides):
 
 class TestIntentMandateTranslation:
     def test_translates_amount_and_daily_limits(self):
-        policy = intent_mandate_to_policy(make_intent_mandate(max_amount=1500.0), "agent_1", "human_1")
+        policy = intent_mandate_to_policy(
+            make_intent_mandate(max_amount=1500.0), "agent_1", "human_1"
+        )
         assert policy.max_amount_per_txn == 1500.0
 
     def test_translates_categories_and_blocklist(self):
         policy = intent_mandate_to_policy(
-            make_intent_mandate(allowed_merchant_categories=["grocery", "pharmacy"], excluded_merchants=["BadCo"]),
-            "agent_1", "human_1",
+            make_intent_mandate(
+                allowed_merchant_categories=["grocery", "pharmacy"],
+                excluded_merchants=["BadCo"],
+            ),
+            "agent_1",
+            "human_1",
         )
         assert policy.allowed_categories == ["grocery", "pharmacy"]
         assert policy.blocked_merchants == ["BadCo"]
 
     def test_translates_time_window(self):
         policy = intent_mandate_to_policy(
-            make_intent_mandate(valid_hours={"start": 9, "end": 18}), "agent_1", "human_1",
+            make_intent_mandate(valid_hours={"start": 9, "end": 18}),
+            "agent_1",
+            "human_1",
         )
         assert policy.time_window.start_hour == 9
         assert policy.time_window.end_hour == 18
@@ -84,13 +98,17 @@ class TestIntentMandateTranslation:
 
 class TestCartMandateTranslation:
     def test_translates_merchant_and_amount(self):
-        request = cart_mandate_to_request(make_cart_mandate(total_amount=750.0), "agent_1", "goal")
+        request = cart_mandate_to_request(
+            make_cart_mandate(total_amount=750.0), "agent_1", "goal"
+        )
         assert request.merchant_name == "FreshMart"
         assert request.amount == 750.0
 
     def test_translates_intent_text(self):
         request = cart_mandate_to_request(
-            make_cart_mandate(line_items_summary="premium gift card bundle"), "agent_1", "goal",
+            make_cart_mandate(line_items_summary="premium gift card bundle"),
+            "agent_1",
+            "goal",
         )
         assert request.stated_intent == "premium gift card bundle"
 

@@ -25,10 +25,14 @@ import json
 import hashlib
 
 from app.core.llm_client import LLMClient
-from app.rag.case_retriever import CaseRetriever, PastCase
+from app.rag.case_retriever import CaseRetriever
 from app.models.policy import (
-    AgentPolicy, TransactionRequest, Decision,
-    VERDICT_APPROVE, VERDICT_HOLD, VERDICT_BLOCK,
+    AgentPolicy,
+    TransactionRequest,
+    Decision,
+    VERDICT_APPROVE,
+    VERDICT_HOLD,
+    VERDICT_BLOCK,
 )
 
 logger = logging.getLogger("sentinel.llm_reasoner")
@@ -87,8 +91,13 @@ Respond ONLY with valid JSON in this exact shape:
   "confidence": 0.0
 }"""
 
+
 class LLMReasoner:
-    def __init__(self, llm_client: LLMClient | None = None, case_retriever: CaseRetriever | None = None):
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        case_retriever: CaseRetriever | None = None,
+    ):
         self.llm = llm_client or LLMClient()
         self.retriever = case_retriever or CaseRetriever()
 
@@ -115,22 +124,34 @@ Similar past cases from this agent's history:
 Decide the verdict."""
 
         prompt_hash = hashlib.sha256((SYSTEM_PROMPT + user_prompt).encode()).hexdigest()
-        metadata = dict(prompt_version=PROMPT_VERSION, prompt_hash=prompt_hash,
-                        llm_mode='mock' if self.llm.mock_mode else 'live')
+        metadata = dict(
+            prompt_version=PROMPT_VERSION,
+            prompt_hash=prompt_hash,
+            llm_mode="mock" if self.llm.mock_mode else "live",
+        )
         mock_response = self._mock_decision(request)
 
-        result = self.llm.complete_json(SYSTEM_PROMPT, user_prompt, mock_response=mock_response)
+        result = self.llm.complete_json(
+            SYSTEM_PROMPT, user_prompt, mock_response=mock_response
+        )
 
         if "error" in result or "verdict" not in result:
-            logger.warning(f"LLM reasoner returned unusable output for {request.request_id}, defaulting to HOLD.")
+            logger.warning(
+                f"LLM reasoner returned unusable output for {request.request_id}, defaulting to HOLD."
+            )
             return Decision(
                 request_id=request.request_id,
                 verdict=VERDICT_HOLD,
-                reasons=["LLM reasoner output was invalid; defaulted to HOLD for safety."],
+                reasons=[
+                    "LLM reasoner output was invalid; defaulted to HOLD for safety."
+                ],
                 checked_rules=["llm_edge_case_reasoning"],
                 decided_by=LLM_REASONER,
-                similar_past_cases=similar_ids, **metadata,
-                model_version=f"{self.llm.provider}:{self.llm.model}" if not self.llm.mock_mode else "mock",
+                similar_past_cases=similar_ids,
+                **metadata,
+                model_version=f"{self.llm.provider}:{self.llm.model}"
+                if not self.llm.mock_mode
+                else "mock",
             )
 
         verdict = result["verdict"]
@@ -144,8 +165,12 @@ Decide the verdict."""
             checked_rules=["llm_edge_case_reasoning"],
             decided_by=LLM_REASONER,
             similar_past_cases=similar_ids,
-            confidence=result.get("confidence"), token_usage=result.get("_usage"), **metadata,
-            model_version=f"{self.llm.provider}:{self.llm.model}" if not self.llm.mock_mode else "mock",
+            confidence=result.get("confidence"),
+            token_usage=result.get("_usage"),
+            **metadata,
+            model_version=f"{self.llm.provider}:{self.llm.model}"
+            if not self.llm.mock_mode
+            else "mock",
         )
 
     @staticmethod
@@ -154,14 +179,40 @@ Decide the verdict."""
         judgment a real model would make, so downstream code and eval
         harnesses can be built/tested before live keys are available."""
         STOPWORDS = {
-            "a", "an", "the", "buy", "purchase", "get", "acquire", "and", "or",
-            "for", "to", "of", "on", "in", "at", "with", "under", "budget",
-            "weekly", "monthly", "daily", "please", "now",
+            "a",
+            "an",
+            "the",
+            "buy",
+            "purchase",
+            "get",
+            "acquire",
+            "and",
+            "or",
+            "for",
+            "to",
+            "of",
+            "on",
+            "in",
+            "at",
+            "with",
+            "under",
+            "budget",
+            "weekly",
+            "monthly",
+            "daily",
+            "please",
+            "now",
         }
         OVERRIDE_PATTERNS = (
-            "ignore previous", "ignore prior", "ignore all previous",
-            "disregard previous", "disregard prior", "new instructions",
-            "forget previous", "override", "system prompt",
+            "ignore previous",
+            "ignore prior",
+            "ignore all previous",
+            "disregard previous",
+            "disregard prior",
+            "new instructions",
+            "forget previous",
+            "override",
+            "system prompt",
         )
 
         intent_lower = request.stated_intent.lower()
@@ -175,14 +226,14 @@ Decide the verdict."""
             return {
                 "verdict": VERDICT_BLOCK,
                 "reasoning": "[MOCK] Stated intent contains an instruction-override pattern "
-                             "-- likely prompt injection, regardless of any surface keyword overlap.",
+                "-- likely prompt injection, regardless of any surface keyword overlap.",
                 "confidence": 0.9,
             }
         if not overlap:
             return {
                 "verdict": VERDICT_HOLD,
                 "reasoning": "[MOCK] Stated intent does not clearly relate to the authorized "
-                             "goal; holding for human confirmation rather than guessing.",
+                "goal; holding for human confirmation rather than guessing.",
                 "confidence": 0.55,
             }
         return {

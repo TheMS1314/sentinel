@@ -29,7 +29,9 @@ import hashlib
 import uuid
 
 RATE_LIMIT_REQUESTS = int(os.environ.get("SENTINEL_RATE_LIMIT_REQUESTS", "60"))
-RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("SENTINEL_RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_WINDOW_SECONDS = int(
+    os.environ.get("SENTINEL_RATE_LIMIT_WINDOW_SECONDS", "60")
+)
 
 
 class SlidingWindowRateLimiter:
@@ -44,7 +46,14 @@ class SlidingWindowRateLimiter:
         now = time.time()
         with self._lock:
             if len(self._hits) > 10000:
-                self._hits = defaultdict(deque, {k: v for k, v in self._hits.items() if v and v[-1] >= now - self.window_seconds})
+                self._hits = defaultdict(
+                    deque,
+                    {
+                        k: v
+                        for k, v in self._hits.items()
+                        if v and v[-1] >= now - self.window_seconds
+                    },
+                )
             window = self._hits[key]
             cutoff = now - self.window_seconds
             while window and window[0] < cutoff:
@@ -67,13 +76,22 @@ rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_S
 
 
 async def enforce_rate_limit(request: Request):
-    principal = getattr(request.state, 'principal', None)
-    key = principal.subject if principal else 'login:' + (request.client.host if request.client else 'unknown')
-    if os.environ.get('RATE_LIMIT_BACKEND') == 'redis':
+    principal = getattr(request.state, "principal", None)
+    key = (
+        principal.subject
+        if principal
+        else "login:" + (request.client.host if request.client else "unknown")
+    )
+    if os.environ.get("RATE_LIMIT_BACKEND") == "redis":
+
         def check_shared():
             import redis
-            client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
-                                          socket_connect_timeout=2, socket_timeout=2)
+
+            client = redis.Redis.from_url(
+                os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
             script = """
             local t = redis.call('TIME')
             local now = t[1] * 1000 + math.floor(t[2] / 1000)
@@ -87,14 +105,23 @@ async def enforce_rate_limit(request: Request):
             redis.call('EXPIRE', KEYS[1], ARGV[1])
             return 0
             """
-            retry = client.eval(script, 1, 'sentinel:rate:' + hashlib.sha256(key.encode()).hexdigest(),
-                                RATE_LIMIT_WINDOW_SECONDS, RATE_LIMIT_REQUESTS, uuid.uuid4().hex)
+            retry = client.eval(
+                script,
+                1,
+                "sentinel:rate:" + hashlib.sha256(key.encode()).hexdigest(),
+                RATE_LIMIT_WINDOW_SECONDS,
+                RATE_LIMIT_REQUESTS,
+                uuid.uuid4().hex,
+            )
             return retry == 0, retry
+
         try:
             allowed, retry_after = await asyncio.to_thread(check_shared)
         except Exception:
-            raise HTTPException(503, 'Rate-limit backend unavailable') from None
+            raise HTTPException(503, "Rate-limit backend unavailable") from None
     else:
         allowed, retry_after = rate_limiter.check(key)
     if not allowed:
-        raise HTTPException(429, 'Rate limit exceeded', headers={'Retry-After': str(retry_after)})
+        raise HTTPException(
+            429, "Rate limit exceeded", headers={"Retry-After": str(retry_after)}
+        )

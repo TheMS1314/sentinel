@@ -39,3 +39,4 @@
 *.temp
 .test-pg/
 artifacts/
+.venv*/

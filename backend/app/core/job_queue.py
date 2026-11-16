@@ -1,4 +1,5 @@
 """Bounded development queue. Use Redis Streams for shared durable delivery."""
+
 from __future__ import annotations
 import asyncio
 import uuid
@@ -47,7 +48,9 @@ class EvaluationQueue:
     async def start(self):
         self._queue = asyncio.Queue(maxsize=self._queue.maxsize)
         self._lock = asyncio.Lock()
-        self._workers = [asyncio.create_task(self._worker_loop(i)) for i in range(self._num_workers)]
+        self._workers = [
+            asyncio.create_task(self._worker_loop(i)) for i in range(self._num_workers)
+        ]
         logger.info(f"EvaluationQueue started with {self._num_workers} workers.")
 
     async def stop(self):
@@ -55,12 +58,21 @@ class EvaluationQueue:
             w.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
+        for job in self._jobs.values():
+            if job.status not in (JobStatus.DONE, JobStatus.FAILED):
+                job.status = JobStatus.FAILED
+                job.error = "Development queue stopped; inspect durable request state before retrying"
+                job.completed_at = time.time()
 
     async def enqueue(self, payload: dict, batch_id: str | None = None) -> str:
         job_id = f"job_{uuid.uuid4().hex[:10]}"
         payload = dict(payload)
         payload.setdefault("request_id", "req_" + uuid.uuid4().hex)
-        job = Job(job_id=job_id, status=JobStatus.QUEUED, submitted_by=payload.get("_submitted_by", ""))
+        job = Job(
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            submitted_by=payload.get("_submitted_by", ""),
+        )
         async with self._lock:
             self._jobs[job_id] = job
             if batch_id:
@@ -69,14 +81,23 @@ class EvaluationQueue:
         return job_id
 
     async def enqueue_batch(self, payloads, batch_id=None):
-        if not 1 <= len(payloads) <= 100 or self._queue.qsize() + len(payloads) > self._queue.maxsize:
+        if (
+            not 1 <= len(payloads) <= 100
+            or self._queue.qsize() + len(payloads) > self._queue.maxsize
+        ):
             raise ValueError("Invalid batch or queue capacity exceeded")
         return [await self.enqueue(p, batch_id) for p in payloads]
 
     def _cleanup(self):
         cutoff = time.time() - 3600
-        self._jobs = {k: v for k, v in self._jobs.items() if v.completed_at is None or v.completed_at >= cutoff}
-        self._batches = {k: v for k, v in self._batches.items() if any(j in self._jobs for j in v)}
+        self._jobs = {
+            k: v
+            for k, v in self._jobs.items()
+            if v.completed_at is None or v.completed_at >= cutoff
+        }
+        self._batches = {
+            k: v for k, v in self._batches.items() if any(j in self._jobs for j in v)
+        }
 
     def get_job(self, job_id: str):
         self._cleanup()
@@ -98,7 +119,13 @@ class EvaluationQueue:
             "complete": done == len(job_ids),
             "job_ids": job_ids,
             "jobs": [
-                {"job_id": j.job_id, "status": j.status.value, "result": j.result, "error": j.error, "submitted_by": j.submitted_by}
+                {
+                    "job_id": j.job_id,
+                    "status": j.status.value,
+                    "result": j.result,
+                    "error": j.error,
+                    "submitted_by": j.submitted_by,
+                }
                 for j in jobs
             ],
         }
@@ -108,7 +135,13 @@ class EvaluationQueue:
         by_status = {s.value: 0 for s in JobStatus}
         for job in self._jobs.values():
             by_status[job.status.value] += 1
-        return {"queue_depth": self._queue.qsize(), "by_status": by_status, "total_jobs": len(self._jobs), "backend": "memory", "live_workers": sum(not w.done() for w in self._workers)}
+        return {
+            "queue_depth": self._queue.qsize(),
+            "by_status": by_status,
+            "total_jobs": len(self._jobs),
+            "backend": "memory",
+            "live_workers": sum(not w.done() for w in self._workers),
+        }
 
     async def _worker_loop(self, worker_id: int):
         while True:
@@ -122,9 +155,9 @@ class EvaluationQueue:
                 result = await asyncio.to_thread(self._submit_fn, payload)
                 job.result = result
                 job.status = JobStatus.DONE
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Job {job_id} failed on worker {worker_id}")
-                job.error = str(e)
+                job.error = "Evaluation failed; inspect server logs"
                 job.status = JobStatus.FAILED
             finally:
                 job.completed_at = time.time()

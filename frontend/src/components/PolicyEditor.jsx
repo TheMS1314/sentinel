@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { ShieldCheck, Save } from "lucide-react";
 
 function Field({ label, children }) {
@@ -25,34 +25,27 @@ const DEFAULT_FORM = {
   velocity_window_minutes: 1440,
 };
 
-export default function PolicyEditor({ onCreatePolicy, currentPolicy, agentId, ownerId }) {
-  const [form, setForm] = useState({ ...DEFAULT_FORM, agent_id: agentId || DEFAULT_FORM.agent_id });
+function policyForm(currentPolicy, agentId) {
+  const p = currentPolicy?.policy;
+  if (!p || p.agent_id !== agentId) return { ...DEFAULT_FORM, agent_id: agentId || DEFAULT_FORM.agent_id };
+  return {
+    agent_id: p.agent_id, owner_human_id: p.owner_human_id,
+    authorized_goal: p.authorized_goal || DEFAULT_FORM.authorized_goal,
+    allowed_merchants: (p.allowed_merchants || []).join(', '),
+    max_amount_per_txn: p.max_amount_per_txn, max_daily_total: p.max_daily_total,
+    allowed_categories: (p.allowed_categories || []).join(', '),
+    blocked_merchants: (p.blocked_merchants || []).join(', '),
+    time_window_start: p.time_window?.start_hour ?? 6, time_window_end: p.time_window?.end_hour ?? 22,
+    velocity_max_count: p.velocity?.max_count ?? 3, velocity_window_minutes: p.velocity?.window_minutes ?? 1440,
+  };
+}
 
-  useEffect(() => {
-    if (currentPolicy?.policy) {
-      const p = currentPolicy.policy;
-      setForm({
-        agent_id: p.agent_id,
-        owner_human_id: p.owner_human_id,
-        allowed_merchants: (p.allowed_merchants || []).join(", "),
-        authorized_goal: p.authorized_goal || "buy weekly groceries under budget",
-        max_amount_per_txn: p.max_amount_per_txn,
-        max_daily_total: p.max_daily_total,
-        allowed_categories: (p.allowed_categories || []).join(", "),
-        blocked_merchants: (p.blocked_merchants || []).join(", "),
-        time_window_start: p.time_window?.start_hour ?? 6,
-        time_window_end: p.time_window?.end_hour ?? 22,
-        velocity_max_count: p.velocity?.max_count ?? 3,
-        velocity_window_minutes: p.velocity?.window_minutes ?? 1440,
-      });
-    } else if (agentId) {
-      // Switched to an agent with no policy yet (or a brand-new one
-      // about to be created) -- reset to sane defaults but keep
-      // whichever agent is actually selected, rather than silently
-      // showing stale form data from the previously selected agent.
-      setForm({ ...DEFAULT_FORM, agent_id: agentId });
-    }
-  }, [currentPolicy, agentId]);
+export default function PolicyEditor(props) {
+  return <PolicyEditorForm key={`${props.agentId}:${props.currentPolicy?.policy_id || 'new'}`} {...props} />;
+}
+
+function PolicyEditorForm({ onCreatePolicy, currentPolicy, agentId, ownerId }) {
+  const [form, setForm] = useState(() => policyForm(currentPolicy, agentId));
 
   const update = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 

@@ -16,6 +16,7 @@ every standalone script under app/demo, app/eval, app/loadtest,
 app/fuzz) must call load_env() as its first import-time action, before
 importing any other app module that reads os.environ.get(...).
 """
+
 from __future__ import annotations
 from pathlib import Path
 from dotenv import load_dotenv

@@ -38,7 +38,10 @@ class LLMClient:
                 self.mock_mode = True
             else:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=key, timeout=15.0, max_retries=0)
+
+                self._client = anthropic.Anthropic(
+                    api_key=key, timeout=15.0, max_retries=0
+                )
 
         elif self.provider == "openrouter":
             key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -47,9 +50,12 @@ class LLMClient:
             else:
                 # OpenRouter is OpenAI-API-compatible
                 from openai import OpenAI
+
                 self._client = OpenAI(
                     base_url="https://openrouter.ai/api/v1",
-                    api_key=key, timeout=15.0, max_retries=0,
+                    api_key=key,
+                    timeout=15.0,
+                    max_retries=0,
                 )
         else:
             raise ValueError(f"Unknown LLM_PROVIDER: {self.provider}")
@@ -60,7 +66,9 @@ class LLMClient:
                 f"no API key configured). Responses are canned, not real model output."
             )
 
-    def complete_json(self, system_prompt: str, user_prompt: str, mock_response: dict) -> dict:
+    def complete_json(
+        self, system_prompt: str, user_prompt: str, mock_response: dict
+    ) -> dict:
         """
         Calls the LLM asking for a JSON object back.
 
@@ -69,8 +77,18 @@ class LLMClient:
         to HOLD rather than crashing or approving without a valid decision.
         """
         if self.mock_mode:
-            logger.info("[MOCK LLM] Returning canned response instead of a real API call.")
-            return dict(mock_response, _usage={"mode": "mock", "input_tokens": 0, "output_tokens": 0, "cost_usd": None})
+            logger.info(
+                "[MOCK LLM] Returning canned response instead of a real API call."
+            )
+            return dict(
+                mock_response,
+                _usage={
+                    "mode": "mock",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": None,
+                },
+            )
 
         max_attempts = 2
 
@@ -88,9 +106,7 @@ class LLMClient:
                         raise RuntimeError("LLM response contained no content")
 
                     text = "".join(
-                        block.text
-                        for block in resp.content
-                        if hasattr(block, "text")
+                        block.text for block in resp.content if hasattr(block, "text")
                     )
 
                 else:  # openrouter
@@ -146,24 +162,37 @@ class LLMClient:
 
                     finish_reason = getattr(choices[0], "finish_reason", None)
                     if finish_reason == "length":
-                        raise RuntimeError("LLM response was truncated (finish_reason=length)")
+                        raise RuntimeError(
+                            "LLM response was truncated (finish_reason=length)"
+                        )
 
                 result = self._safe_parse_json(text)
 
                 if "error" not in result and "verdict" in result:
-                    from pydantic import BaseModel, ConfigDict, Field, ValidationError
+                    from pydantic import BaseModel, ConfigDict, Field
                     from typing import Literal
+
                     class Output(BaseModel):
-                        model_config = ConfigDict(extra='forbid')
-                        verdict: Literal['APPROVE', 'HOLD', 'BLOCK']
+                        model_config = ConfigDict(extra="forbid")
+                        verdict: Literal["APPROVE", "HOLD", "BLOCK"]
                         reasoning: str = Field(min_length=1, max_length=4000)
                         confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+
                     result = Output.model_validate(result).model_dump()
-                    usage = getattr(resp, 'usage', None)
-                    result['_usage'] = {'mode': 'live', 'attempts': attempt,
-                        'input_tokens': getattr(usage, 'prompt_tokens', getattr(usage, 'input_tokens', None)),
-                        'output_tokens': getattr(usage, 'completion_tokens', getattr(usage, 'output_tokens', None)),
-                        'cost_usd': getattr(usage, 'cost', None)}
+                    usage = getattr(resp, "usage", None)
+                    result["_usage"] = {
+                        "mode": "live",
+                        "attempts": attempt,
+                        "input_tokens": getattr(
+                            usage, "prompt_tokens", getattr(usage, "input_tokens", None)
+                        ),
+                        "output_tokens": getattr(
+                            usage,
+                            "completion_tokens",
+                            getattr(usage, "output_tokens", None),
+                        ),
+                        "cost_usd": getattr(usage, "cost", None),
+                    }
                     return result
 
                 raise RuntimeError("LLM response contained invalid JSON")
@@ -225,7 +254,7 @@ class LLMClient:
         end = text.rfind("}")
 
         if start != -1 and end > start:
-            candidate = text[start:end + 1]
+            candidate = text[start : end + 1]
             try:
                 result = json.loads(candidate)
                 if isinstance(result, dict) and "verdict" in result:

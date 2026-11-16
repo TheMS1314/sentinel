@@ -24,8 +24,10 @@ path works. The design intent, tested explicitly here:
                                      oversight -- optimizations may
                                      degrade, the audit trail may not.
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["OPENROUTER_API_KEY"] = ""
 
@@ -34,7 +36,13 @@ from unittest.mock import MagicMock
 import uuid
 
 from app.models.db import init_db, SessionLocal
-from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit, VERDICT_HOLD
+from app.models.policy import (
+    AgentPolicy,
+    TransactionRequest,
+    TimeWindow,
+    VelocityLimit,
+    VERDICT_HOLD,
+)
 from app.core.orchestrator import SentinelOrchestrator
 from app.core.llm_client import LLMClient
 from app.core.llm_reasoner import LLMReasoner
@@ -59,9 +67,14 @@ def fresh_agent_id() -> str:
 
 def make_policy(agent_id: str, **overrides) -> AgentPolicy:
     defaults = dict(
-        policy_id=f"pol_{agent_id}", agent_id=agent_id, owner_human_id="human_chaos",
-        max_amount_per_txn=2000.0, max_daily_total=5000.0,
-        allowed_categories=["grocery"], time_window=TimeWindow(6, 22), velocity=VelocityLimit(3, 1440),
+        policy_id=f"pol_{agent_id}",
+        agent_id=agent_id,
+        owner_human_id="human_chaos",
+        max_amount_per_txn=2000.0,
+        max_daily_total=5000.0,
+        allowed_categories=["grocery"],
+        time_window=TimeWindow(6, 22),
+        velocity=VelocityLimit(3, 1440),
     )
     defaults.update(overrides)
     return AgentPolicy(**defaults)
@@ -69,9 +82,13 @@ def make_policy(agent_id: str, **overrides) -> AgentPolicy:
 
 def make_request(agent_id: str, **overrides) -> TransactionRequest:
     defaults = dict(
-        request_id=f"req_{uuid.uuid4().hex[:10]}", agent_id=agent_id,
-        merchant_name="FreshMart", merchant_category="grocery", amount=500.0,
-        requested_at_hour=14, requested_at_iso="2026-08-24T14:00:00",
+        request_id=f"req_{uuid.uuid4().hex[:10]}",
+        agent_id=agent_id,
+        merchant_name="FreshMart",
+        merchant_category="grocery",
+        amount=500.0,
+        requested_at_hour=14,
+        requested_at_iso="2026-08-24T14:00:00",
         stated_intent="restock kitchen supplies",
         raw_agent_goal="buy weekly groceries under budget",
     )
@@ -85,9 +102,13 @@ class TestLLMFailsSoft:
         client.mock_mode = False
         client._client = MagicMock()
         client.provider = "anthropic"
-        client._client.messages.create.side_effect = ConnectionError("simulated network failure")
+        client._client.messages.create.side_effect = ConnectionError(
+            "simulated network failure"
+        )
 
-        result = client.complete_json("system", "user", mock_response={"should": "not_appear"})
+        result = client.complete_json(
+            "system", "user", mock_response={"should": "not_appear"}
+        )
         assert "error" in result
         assert result["error"] == "llm_call_failed"
 
@@ -100,7 +121,9 @@ class TestLLMFailsSoft:
         broken_client.mock_mode = False
         broken_client._client = MagicMock()
         broken_client.provider = "anthropic"
-        broken_client._client.messages.create.side_effect = TimeoutError("simulated timeout")
+        broken_client._client.messages.create.side_effect = TimeoutError(
+            "simulated timeout"
+        )
 
         reasoner = LLMReasoner(llm_client=broken_client)
         decision = reasoner.evaluate(policy, request)
@@ -116,7 +139,10 @@ class TestLLMFailsSoft:
         orchestrator = SentinelOrchestrator(db)
         orchestrator.reasoner.llm = MagicMock()
         orchestrator.reasoner.llm.mock_mode = False
-        orchestrator.reasoner.llm.complete_json.return_value = {"error": "llm_call_failed", "detail": "simulated"}
+        orchestrator.reasoner.llm.complete_json.return_value = {
+            "error": "llm_call_failed",
+            "detail": "simulated",
+        }
 
         decision = orchestrator.evaluate_transaction(policy, request)
         assert decision.verdict == VERDICT_HOLD
@@ -163,9 +189,13 @@ class TestRazorpayFailsSoft:
         gateway = RazorpayGateway()
         gateway.mock_mode = False
         gateway.client = MagicMock()
-        gateway.client.order.create.side_effect = ConnectionError("simulated Razorpay outage")
+        gateway.client.order.create.side_effect = ConnectionError(
+            "simulated Razorpay outage"
+        )
 
-        result = gateway.create_order(amount_inr=500.0, request_id="req_chaos_1", notes={})
+        result = gateway.create_order(
+            amount_inr=500.0, request_id="req_chaos_1", notes={}
+        )
         assert result["status"] == "unknown"
         assert "error" in result
 
@@ -177,7 +207,9 @@ class TestRazorpayFailsSoft:
         orchestrator = SentinelOrchestrator(db)
         orchestrator.gateway.mock_mode = False
         orchestrator.gateway.client = MagicMock()
-        orchestrator.gateway.client.order.create.side_effect = ConnectionError("simulated outage")
+        orchestrator.gateway.client.order.create.side_effect = ConnectionError(
+            "simulated outage"
+        )
 
         decision = orchestrator.evaluate_transaction(policy, request)
         assert decision.verdict == "APPROVE"
@@ -195,7 +227,9 @@ class TestDatabaseFailsClosed:
         request = make_request(agent_id, stated_intent="buy weekly groceries")
 
         orchestrator = SentinelOrchestrator(db)
-        orchestrator.db.add = MagicMock(side_effect=ConnectionError("simulated DB outage"))
+        orchestrator.db.add = MagicMock(
+            side_effect=ConnectionError("simulated DB outage")
+        )
 
         with pytest.raises(ConnectionError):
             orchestrator.evaluate_transaction(policy, request)

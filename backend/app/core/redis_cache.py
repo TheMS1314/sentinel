@@ -42,7 +42,9 @@ class RedisCache:
         try:
             raw = self._client.get(self._k(key))
         except Exception as e:
-            logger.warning(f"Redis GET failed for {key} ({e}); treating as a cache miss.")
+            logger.warning(
+                f"Redis GET failed for {key} ({e}); treating as a cache miss."
+            )
             return None
         if raw is None:
             return None
@@ -63,26 +65,34 @@ class RedisCache:
             # Caching is an optimization, never a correctness requirement --
             # a failed cache write must not fail the request that triggered
             # it. The next read will just be a cache miss and recompute.
-            logger.warning(f"Redis SET failed for {key} ({e}); continuing without caching this value.")
+            logger.warning(
+                f"Redis SET failed for {key} ({e}); continuing without caching this value."
+            )
 
     def invalidate(self, key: str):
         try:
             self._client.delete(self._k(key))
         except Exception as e:
-            logger.warning(f"Redis DELETE failed for {key} ({e}); a stale value may be served until its TTL expires.")
+            logger.warning(
+                f"Redis DELETE failed for {key} ({e}); a stale value may be served until its TTL expires."
+            )
 
     def invalidate_prefix(self, prefix: str):
         try:
             pattern = f"{self.key_prefix}{prefix}*"
             cursor = 0
             while True:
-                cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=100)
+                cursor, keys = self._client.scan(
+                    cursor=cursor, match=pattern, count=100
+                )
                 if keys:
                     self._client.delete(*keys)
                 if cursor == 0:
                     break
         except Exception as e:
-            logger.warning(f"Redis prefix invalidation failed for {prefix} ({e}); stale values may be served until TTL expiry.")
+            logger.warning(
+                f"Redis prefix invalidation failed for {prefix} ({e}); stale values may be served until TTL expiry."
+            )
 
     def stats(self) -> dict:
         pattern = f"{self.key_prefix}*"
@@ -111,5 +121,7 @@ def make_cache(ttl_seconds: float, key_prefix: str):
             logger.info(f"Using Redis cache backend for {key_prefix}")
             return cache
         except Exception as e:
-            logger.warning(f"CACHE_BACKEND=redis but Redis unavailable ({e}); falling back to in-memory cache.")
+            logger.warning(
+                f"CACHE_BACKEND=redis but Redis unavailable ({e}); falling back to in-memory cache."
+            )
     return TTLCache(ttl_seconds=ttl_seconds)

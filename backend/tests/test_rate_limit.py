@@ -2,8 +2,10 @@
 Tests for the sliding-window rate limiter.
 Run with: pytest backend/tests/test_rate_limit.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest

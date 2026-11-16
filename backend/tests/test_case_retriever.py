@@ -2,8 +2,10 @@
 Tests for the case-based retriever (RAG).
 Run with: pytest backend/tests/test_case_retriever.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
@@ -43,7 +45,12 @@ class TestFormatForPrompt:
     def test_multiple_results_all_render(self):
         cases = [
             (make_case(request_id="r1", merchant_name="FreshMart"), 0.9),
-            (make_case(request_id="r2", merchant_name="DailyBasket", verdict="BLOCK"), 0.5),
+            (
+                make_case(
+                    request_id="r2", merchant_name="DailyBasket", verdict="BLOCK"
+                ),
+                0.5,
+            ),
         ]
         result = CaseRetriever.format_for_prompt(cases)
         assert "FreshMart" in result
@@ -58,13 +65,24 @@ class TestRetrieveSimilar:
         it returns are actually complete."""
         retriever = CaseRetriever()
         cases = [
-            make_case(request_id="r1", merchant_name="FreshMart", text="grocery FreshMart restock kitchen"),
-            make_case(request_id="r2", merchant_name="DailyBasket", text="grocery DailyBasket restock kitchen"),
+            make_case(
+                request_id="r1",
+                merchant_name="FreshMart",
+                text="grocery FreshMart restock kitchen",
+            ),
+            make_case(
+                request_id="r2",
+                merchant_name="DailyBasket",
+                text="grocery DailyBasket restock kitchen",
+            ),
         ]
         retriever.refresh(cases)
         results = retriever.retrieve_similar(
-            merchant_category="grocery", merchant_name="QuickKirana",
-            stated_intent="restock kitchen", amount=300.0, min_similarity=0.01,
+            merchant_category="grocery",
+            merchant_name="QuickKirana",
+            stated_intent="restock kitchen",
+            amount=300.0,
+            min_similarity=0.01,
         )
         assert len(results) > 0
         for case, score in results:

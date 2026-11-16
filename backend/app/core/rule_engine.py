@@ -27,8 +27,12 @@ from app.core.validation import paise, utc_timestamp
 from dataclasses import dataclass
 
 from app.models.policy import (
-    AgentPolicy, TransactionRequest, Decision,
-    VERDICT_APPROVE, VERDICT_HOLD, VERDICT_BLOCK,
+    AgentPolicy,
+    TransactionRequest,
+    Decision,
+    VERDICT_APPROVE,
+    VERDICT_HOLD,
+    VERDICT_BLOCK,
 )
 
 RULE_ENGINE = "rule_engine"
@@ -38,7 +42,7 @@ ESCALATE = "ESCALATE"  # internal-only signal, not a final Decision verdict
 
 @dataclass
 class RuleEngineResult:
-    outcome: str                 # APPROVE / BLOCK / HOLD / ESCALATE
+    outcome: str  # APPROVE / BLOCK / HOLD / ESCALATE
     reasons: list[str]
     checked_rules: list[str]
 
@@ -55,6 +59,9 @@ class RuleEngine:
         policy: AgentPolicy,
         request: TransactionRequest,
         recent_history: list,  # list[HistoryItem]
+        *,
+        reserved_total_paise=None,
+        attempt_count=None,
     ) -> RuleEngineResult:
         reasons: list[str] = []
         checked: list[str] = []
@@ -81,14 +88,27 @@ class RuleEngine:
         # attempt never spent anything and must not count against the cap.
         checked.append("max_daily_total")
         today_total_paise = sum(
-            paise(item.request.amount) for item in recent_history
-            if item.counts_against_budget and (item.budget_day or utc_timestamp(item.request.requested_at_iso).date().isoformat()) == utc_timestamp(request.requested_at_iso).date().isoformat()
+            paise(item.request.amount)
+            for item in recent_history
+            if item.counts_against_budget
+            and (
+                item.budget_day
+                or utc_timestamp(item.request.requested_at_iso).date().isoformat()
+            )
+            == utc_timestamp(request.requested_at_iso).date().isoformat()
         )
+        if reserved_total_paise is not None:
+            today_total_paise = reserved_total_paise
         projected_total = today_total_paise + paise(request.amount)
         if projected_total > paise(policy.max_daily_total):
-            return RuleEngineResult(VERDICT_BLOCK, [
-                f'Projected daily total ₹{projected_total / 100:.2f} exceeds daily cap '
-                f'₹{policy.max_daily_total:.2f} (reserved/captured ₹{today_total_paise / 100:.2f}).'], checked)
+            return RuleEngineResult(
+                VERDICT_BLOCK,
+                [
+                    f"Projected daily total ₹{projected_total / 100:.2f} exceeds daily cap "
+                    f"₹{policy.max_daily_total:.2f} (reserved/captured ₹{today_total_paise / 100:.2f})."
+                ],
+                checked,
+            )
 
         # --- 3. Merchant allowlist (strict mode, if configured) ---
         # Normalized comparison (case-fold + strip whitespace) -- an exact
@@ -105,7 +125,9 @@ class RuleEngine:
         checked.append("merchant_allowlist")
         normalized_merchant = request.merchant_name.strip().casefold()
         if policy.allowed_merchants is not None:
-            allowed_normalized = {m.strip().casefold() for m in policy.allowed_merchants}
+            allowed_normalized = {
+                m.strip().casefold() for m in policy.allowed_merchants
+            }
             if normalized_merchant not in allowed_normalized:
                 reasons.append(
                     f"Merchant '{request.merchant_name}' is not on the "
@@ -153,9 +175,14 @@ class RuleEngine:
             minutes=policy.velocity.window_minutes
         )
         recent_count = sum(
-            1 for item in recent_history
-            if window_start <= utc_timestamp(item.request.requested_at_iso) <= utc_timestamp(request.requested_at_iso)
+            1
+            for item in recent_history
+            if window_start
+            <= utc_timestamp(item.request.requested_at_iso)
+            <= utc_timestamp(request.requested_at_iso)
         )
+        if attempt_count is not None:
+            recent_count = attempt_count
         if recent_count + 1 > policy.velocity.max_count:
             reasons.append(
                 f"{recent_count + 1} transactions within "
@@ -178,30 +205,54 @@ class RuleEngine:
         # semantic work. This is just a trigger, not a judgment.
         checked.append("intent_drift_heuristic")
 
-        override_patterns = ('ignore previous', 'ignore prior', 'ignore all previous',
-            'disregard previous', 'disregard prior', 'new instructions', 'forget previous',
-            'override', 'system prompt', 'spend freely')
+        override_patterns = (
+            "ignore previous",
+            "ignore prior",
+            "ignore all previous",
+            "disregard previous",
+            "disregard prior",
+            "new instructions",
+            "forget previous",
+            "override",
+            "system prompt",
+            "spend freely",
+        )
         intent = request.stated_intent.casefold()
         if any(pattern in intent for pattern in override_patterns):
-            return RuleEngineResult(VERDICT_BLOCK,
-                ['Explicit instruction override violates the authorized goal.'], checked)
+            return RuleEngineResult(
+                VERDICT_BLOCK,
+                ["Explicit instruction override violates the authorized goal."],
+                checked,
+            )
         if not request.raw_agent_goal.strip():
-            return RuleEngineResult(VERDICT_HOLD, ['No trusted authorized goal is available.'], checked)
+            return RuleEngineResult(
+                VERDICT_HOLD, ["No trusted authorized goal is available."], checked
+            )
+
         # Only a canonical restatement of the goal is a deterministic fast path.
         # A shared word is insufficient; any added purpose reaches semantic review.
         def canonical(text):
-            text = re.sub(r'\bunder budget\b', '', text.casefold())
-            text = re.sub(r'\b(buy|purchase|get|please)\b', '', text)
-            return ' '.join(re.findall(r'\w+', text))
-        if canonical(intent) != canonical(request.raw_agent_goal) or not canonical(intent):
-            return RuleEngineResult(ESCALATE, ['Intent differs from the authorized goal; semantic review required.'], checked)
+            text = re.sub(r"\bunder budget\b", "", text.casefold())
+            text = re.sub(r"\b(buy|purchase|get|please)\b", "", text)
+            return " ".join(re.findall(r"\w+", text))
+
+        if canonical(intent) != canonical(request.raw_agent_goal) or not canonical(
+            intent
+        ):
+            return RuleEngineResult(
+                ESCALATE,
+                ["Intent differs from the authorized goal; semantic review required."],
+                checked,
+            )
 
         # --- All deterministic checks passed cleanly ---
         reasons.append("All deterministic policy checks passed.")
         return RuleEngineResult(VERDICT_APPROVE, reasons, checked)
 
 
-def result_to_decision(request: TransactionRequest, result: RuleEngineResult) -> Decision:
+def result_to_decision(
+    request: TransactionRequest, result: RuleEngineResult
+) -> Decision:
     """Convert a RuleEngineResult directly to a final Decision (used when
     the rule engine's outcome is final, i.e. not ESCALATE)."""
     return Decision(

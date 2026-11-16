@@ -2,13 +2,23 @@
 Tests for the deterministic rule engine.
 Run with: pytest backend/tests/test_rule_engine.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from datetime import datetime
-from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit, HistoryItem, VERDICT_APPROVE, VERDICT_BLOCK, VERDICT_HOLD
+from app.models.policy import (
+    AgentPolicy,
+    TransactionRequest,
+    TimeWindow,
+    VelocityLimit,
+    HistoryItem,
+    VERDICT_APPROVE,
+    VERDICT_BLOCK,
+    VERDICT_HOLD,
+)
 from app.core.rule_engine import RuleEngine, ESCALATE
 
 
@@ -68,14 +78,20 @@ class TestApprove:
 class TestBlockAmount:
     def test_over_per_txn_cap_blocked(self):
         engine = RuleEngine()
-        result = engine.evaluate(make_policy(max_amount_per_txn=100.0), make_request(amount=500.0), [])
+        result = engine.evaluate(
+            make_policy(max_amount_per_txn=100.0), make_request(amount=500.0), []
+        )
         assert result.outcome == VERDICT_BLOCK
         assert "exceeds per-transaction cap" in result.reasons[0]
 
     def test_daily_total_exceeded_blocked(self):
         engine = RuleEngine()
         policy = make_policy(max_daily_total=1000.0)
-        history = [make_history_item(request_id="req_0", amount=700.0, requested_at_iso="2026-08-22T09:00:00")]
+        history = [
+            make_history_item(
+                request_id="req_0", amount=700.0, requested_at_iso="2026-08-22T09:00:00"
+            )
+        ]
         result = engine.evaluate(policy, make_request(amount=500.0), history)
         assert result.outcome == VERDICT_BLOCK
         assert "daily" in result.reasons[0].lower()
@@ -88,8 +104,12 @@ class TestBlockAmount:
         engine = RuleEngine()
         policy = make_policy(max_daily_total=1000.0)
         history = [
-            make_history_item(request_id="req_blocked", amount=5000.0, verdict=VERDICT_BLOCK,
-                               requested_at_iso="2026-08-22T09:00:00"),
+            make_history_item(
+                request_id="req_blocked",
+                amount=5000.0,
+                verdict=VERDICT_BLOCK,
+                requested_at_iso="2026-08-22T09:00:00",
+            ),
         ]
         result = engine.evaluate(policy, make_request(amount=500.0), history)
         assert result.outcome == VERDICT_APPROVE
@@ -101,7 +121,11 @@ class TestBlockAmount:
         policy = make_policy(max_daily_total=1000.0)
         history = [
             HistoryItem(
-                request=make_request(request_id="req_held", amount=700.0, requested_at_iso="2026-08-22T09:00:00"),
+                request=make_request(
+                    request_id="req_held",
+                    amount=700.0,
+                    requested_at_iso="2026-08-22T09:00:00",
+                ),
                 verdict=VERDICT_HOLD,
                 human_override=VERDICT_APPROVE,
             ),
@@ -132,7 +156,9 @@ class TestMerchantControls:
     def test_disallowed_category_blocked(self):
         engine = RuleEngine()
         policy = make_policy(allowed_categories=["grocery"])
-        result = engine.evaluate(policy, make_request(merchant_category="electronics"), [])
+        result = engine.evaluate(
+            policy, make_request(merchant_category="electronics"), []
+        )
         assert result.outcome == VERDICT_BLOCK
 
     def test_blocklist_case_insensitive(self):
@@ -143,7 +169,9 @@ class TestMerchantControls:
         policy = make_policy(blocked_merchants=["ShadyStore"])
         for variant in ["shadystore", "SHADYSTORE", "ShAdYsToRe"]:
             result = engine.evaluate(policy, make_request(merchant_name=variant), [])
-            assert result.outcome == VERDICT_BLOCK, f"{variant!r} should have been blocked"
+            assert result.outcome == VERDICT_BLOCK, (
+                f"{variant!r} should have been blocked"
+            )
 
     def test_blocklist_whitespace_insensitive(self):
         """Regression test: stray leading/trailing whitespace also
@@ -152,7 +180,9 @@ class TestMerchantControls:
         policy = make_policy(blocked_merchants=["ShadyStore"])
         for variant in ["ShadyStore ", " ShadyStore", "  ShadyStore  "]:
             result = engine.evaluate(policy, make_request(merchant_name=variant), [])
-            assert result.outcome == VERDICT_BLOCK, f"{variant!r} should have been blocked"
+            assert result.outcome == VERDICT_BLOCK, (
+                f"{variant!r} should have been blocked"
+            )
 
     def test_blocklist_genuinely_different_name_not_blocked(self):
         """A genuinely different name (not just case/whitespace) is NOT
@@ -162,7 +192,9 @@ class TestMerchantControls:
         engine = RuleEngine()
         policy = make_policy(blocked_merchants=["ShadyStore"])
         result = engine.evaluate(policy, make_request(merchant_name="ShadyStore2"), [])
-        assert result.outcome == VERDICT_APPROVE  # documented limitation, not a silent gap
+        assert (
+            result.outcome == VERDICT_APPROVE
+        )  # documented limitation, not a silent gap
 
     def test_allowlist_case_insensitive(self):
         engine = RuleEngine()
@@ -193,14 +225,20 @@ class TestVelocity:
             make_history_item(request_id="r1", requested_at_iso="2026-08-22T08:00:00"),
             make_history_item(request_id="r2", requested_at_iso="2026-08-22T09:00:00"),
         ]
-        result = engine.evaluate(policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history)
+        result = engine.evaluate(
+            policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history
+        )
         assert result.outcome == VERDICT_HOLD
 
     def test_velocity_within_limit_approved(self):
         engine = RuleEngine()
         policy = make_policy(velocity=VelocityLimit(max_count=5, window_minutes=1440))
-        history = [make_history_item(request_id="r1", requested_at_iso="2026-08-22T08:00:00")]
-        result = engine.evaluate(policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history)
+        history = [
+            make_history_item(request_id="r1", requested_at_iso="2026-08-22T08:00:00")
+        ]
+        result = engine.evaluate(
+            policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history
+        )
         assert result.outcome == VERDICT_APPROVE
 
     def test_blocked_attempts_still_count_toward_velocity(self):
@@ -210,10 +248,20 @@ class TestVelocity:
         engine = RuleEngine()
         policy = make_policy(velocity=VelocityLimit(max_count=2, window_minutes=1440))
         history = [
-            make_history_item(request_id="r1", verdict=VERDICT_BLOCK, requested_at_iso="2026-08-22T08:00:00"),
-            make_history_item(request_id="r2", verdict=VERDICT_BLOCK, requested_at_iso="2026-08-22T09:00:00"),
+            make_history_item(
+                request_id="r1",
+                verdict=VERDICT_BLOCK,
+                requested_at_iso="2026-08-22T08:00:00",
+            ),
+            make_history_item(
+                request_id="r2",
+                verdict=VERDICT_BLOCK,
+                requested_at_iso="2026-08-22T09:00:00",
+            ),
         ]
-        result = engine.evaluate(policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history)
+        result = engine.evaluate(
+            policy, make_request(requested_at_iso="2026-08-22T10:00:00"), history
+        )
         assert result.outcome == VERDICT_HOLD
 
 

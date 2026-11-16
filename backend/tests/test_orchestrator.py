@@ -3,15 +3,25 @@ Tests for the Sentinel orchestrator -- the full pipeline.
 Requires a running Postgres instance (see docker-compose.yml).
 Run with: pytest backend/tests/test_orchestrator.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["OPENROUTER_API_KEY"] = ""  # force mock mode for all tests in this file
 
 import pytest
 import uuid
 from app.models.db import init_db, SessionLocal
-from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit, VERDICT_APPROVE, VERDICT_BLOCK, VERDICT_HOLD
+from app.models.policy import (
+    AgentPolicy,
+    TransactionRequest,
+    TimeWindow,
+    VelocityLimit,
+    VERDICT_APPROVE,
+    VERDICT_BLOCK,
+    VERDICT_HOLD,
+)
 from app.core.orchestrator import SentinelOrchestrator
 
 
@@ -185,7 +195,9 @@ class TestAuditTrailCompleteness:
         request = make_request(agent_id)
         decision = orchestrator.evaluate_transaction(policy, request)
 
-        tx = db.query(TransactionRecord).filter_by(request_id=request.request_id).first()
+        tx = (
+            db.query(TransactionRecord).filter_by(request_id=request.request_id).first()
+        )
         dec = db.query(DecisionRecord).filter_by(request_id=request.request_id).first()
         assert tx is not None
         assert dec is not None
