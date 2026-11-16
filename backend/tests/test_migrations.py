@@ -1,18 +1,66 @@
-"""Migration checks run in a separate process against disposable databases."""
+"""Run real Alembic upgrades against disposable SQLite and PostgreSQL schemas."""
 
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
+import uuid
+
+import pytest
+import sqlalchemy as sa
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_adopts_legacy_history_without_executing_payments(tmp_path):
-    path = tmp_path / "legacy.sqlite"
-    conn = sqlite3.connect(path)
-    conn.executescript("""
+@pytest.fixture(params=["sqlite", "postgresql"])
+def migration_database(request, tmp_path):
+    admin = None
+    schema = None
+    if request.param == "postgresql":
+        raw = os.environ.get("SENTINEL_TEST_DATABASE_URL", "")
+        if not raw.startswith("postgresql"):
+            pytest.skip("Dedicated PostgreSQL test database is not configured")
+        url = sa.engine.make_url(raw)
+        assert url.database.endswith("_test")
+        admin = sa.create_engine(url)
+        schema = "migration_" + uuid.uuid4().hex
+        with admin.begin() as conn:
+            conn.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+        url = url.update_query_dict({"options": "-csearch_path=" + schema})
+    else:
+        url = sa.engine.make_url("sqlite:///" + str(tmp_path / "migration.sqlite"))
+    engine = sa.create_engine(url)
+    try:
+        yield url.render_as_string(hide_password=False), engine
+    finally:
+        engine.dispose()
+        if admin is not None:
+            with admin.begin() as conn:
+                conn.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
+            admin.dispose()
+
+
+def upgrade(url):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "head",
+        ],
+        env=dict(os.environ, SENTINEL_DATABASE_URL=url),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_adopts_legacy_history_without_executing_payments(migration_database):
+    url, engine = migration_database
+    ddl = """
       CREATE TABLE policies (id INTEGER PRIMARY KEY, policy_id VARCHAR UNIQUE NOT NULL,
         agent_id VARCHAR NOT NULL, owner_human_id VARCHAR NOT NULL, version INTEGER,
         active BOOLEAN, policy_json JSON NOT NULL, created_at DATETIME);
@@ -27,47 +75,43 @@ def test_adopts_legacy_history_without_executing_payments(tmp_path):
       INSERT INTO policies VALUES (1,'p1','a','owner',1,1,'{}',NULL);
       INSERT INTO transactions VALUES (1,'r1','a','m','grocery',29.29,14,'2026-01-01T14:00:00','buy groceries','buy groceries','',NULL);
       INSERT INTO decisions VALUES (1,'r1','APPROVE','[]','[]','rule_engine','[]',NULL,NULL,'created','order1',NULL,NULL);
-    """)
-    conn.commit()
-    conn.close()
-    env = dict(os.environ, SENTINEL_DATABASE_URL="sqlite:///" + str(path))
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(ROOT / "alembic.ini"),
-            "upgrade",
-            "head",
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    conn = sqlite3.connect(path)
-    assert conn.execute("SELECT amount_paise,state FROM payments").fetchone() == (
-        2929,
-        "unknown",
-    )
-    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
-    assert "policy_snapshot" in [
-        r[1] for r in conn.execute("PRAGMA table_info(decisions)")
-    ]
-    conn.close()
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(ROOT / "alembic.ini"),
-            "upgrade",
-            "head",
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    """
+    if engine.dialect.name == "postgresql":
+        ddl = ddl.replace("DATETIME", "TIMESTAMP").replace(
+            "'owner',1,1,", "'owner',1,true,"
+        )
+    with engine.begin() as conn:
+        for statement in ddl.split(";"):
+            if statement.strip():
+                conn.exec_driver_sql(statement)
+    upgrade(url)
+    with engine.connect() as conn:
+        assert conn.execute(
+            sa.text("SELECT amount_paise,state FROM payments")
+        ).one() == (2929, "unknown")
+        assert (
+            conn.execute(sa.text("SELECT COUNT(*) FROM transactions")).scalar_one() == 1
+        )
+        assert not conn.execute(sa.text("SELECT active FROM policies")).scalar_one()
+    assert "policy_snapshot" in {
+        c["name"] for c in sa.inspect(engine).get_columns("decisions")
+    }
+    if engine.dialect.name == "postgresql":
+        assert isinstance(
+            sa.inspect(engine).get_columns("transactions")[5]["type"], sa.Numeric
+        )
+    upgrade(url)
+
+
+def test_creates_fresh_schema(migration_database):
+    url, engine = migration_database
+    upgrade(url)
+    assert {
+        "policies",
+        "transactions",
+        "decisions",
+        "payments",
+        "review_events",
+        "browser_sessions",
+    }.issubset(sa.inspect(engine).get_table_names())
+    upgrade(url)
