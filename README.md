@@ -128,6 +128,14 @@ Current refreshed offline reports: golden **89/89**, synthetic prevalence **500/
 
 Behavioral weights and the distribution-monitor threshold remain uncalibrated heuristics. Monitor alerts never change authorization. Feedback export marks cases for history/label review; it does not automatically retrain or expand authority.
 
+## Risk intelligence extension
+
+The administrator dashboard now includes **Risk intelligence**: expiring local threat indicators, owner-scoped merchant cyber-risk profiles, descriptive multi-agent merchant correlation, and a separate emergency dispatch guard with a freeze and exact rolling count/amount limits. Intelligence can restrict a decision; it cannot expand owner policy authority. Current confirmed threats are checked again before dispatch.
+
+Mastercard Decision Intelligence, Recorded Future and RiskRecon are **not connected**. Local records are labeled operator or synthetic evidence; unknown identity and absent local matches are not safe ratings. The dispatch guard runs inside Sentinel, not on a payment network. See the [design, controls, API and integration path](docs/RISK_INTELLIGENCE.md).
+
+Run migrations before using these controls on an existing database. Paused payments retain their reservations and can resume automatically after controls allow dispatch; review pending work before unfreezing.
+
 ## Existing installations
 
 Back up the database, then run Alembic migrations using the configured backend database:

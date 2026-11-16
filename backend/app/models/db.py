@@ -96,6 +96,9 @@ class TransactionRecord(Base):
     decision = relationship(
         "DecisionRecord", back_populates="transaction", uselist=False
     )
+    intelligence = relationship(
+        "IntelligenceAssessment", uselist=False, lazy="selectin", passive_deletes=True
+    )
 
 
 class DecisionRecord(Base):
@@ -168,6 +171,83 @@ class ProviderEvent(Base):
     event_id = Column(String, primary_key=True)
     payload_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=now_utc)
+
+
+class MerchantRiskProfile(Base):
+    __tablename__ = "merchant_risk_profiles"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "merchant_key", name="uq_owner_merchant"),
+    )
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(String, nullable=False, index=True)
+    merchant_key = Column(String, nullable=False)
+    merchant_name = Column(String, nullable=False)
+    domain = Column(String, nullable=False)
+    cyber_risk_score = Column(Integer, nullable=False)
+    source = Column(String, nullable=False)
+    evidence = Column(Text, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, nullable=False)
+
+
+class ThreatIndicator(Base):
+    __tablename__ = "threat_indicators"
+    indicator_id = Column(String, primary_key=True)
+    domain = Column(String, nullable=False, index=True)
+    source = Column(String, nullable=False)
+    evidence = Column(Text, nullable=False)
+    confirmed = Column(Boolean, default=False, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, nullable=False)
+
+
+class IntelligenceAssessment(Base):
+    __tablename__ = "intelligence_assessments"
+    request_id = Column(
+        String,
+        ForeignKey("transactions.request_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    report = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=now_utc, nullable=False)
+
+
+class DispatchGuard(Base):
+    __tablename__ = "dispatch_guard"
+    id = Column(Integer, primary_key=True)
+    version = Column(Integer, default=1, nullable=False)
+    frozen = Column(Boolean, default=False, nullable=False)
+    window_seconds = Column(Integer, default=60, nullable=False)
+    max_dispatches = Column(Integer, nullable=True)
+    max_amount_paise = Column(BigInteger, nullable=True)
+    reason = Column(Text, nullable=False)
+    updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, nullable=False)
+
+
+class DispatchClaim(Base):
+    __tablename__ = "dispatch_claims"
+    request_id = Column(
+        String,
+        ForeignKey("transactions.request_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    amount_paise = Column(BigInteger, nullable=False)
+    claimed_at = Column(DateTime, default=now_utc, nullable=False, index=True)
+
+
+class RiskControlEvent(Base):
+    __tablename__ = "risk_control_events"
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    entity_id = Column(String, nullable=False)
+    before = Column(JSON, nullable=True)
+    after = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=now_utc, nullable=False)
 
 
 def init_db():

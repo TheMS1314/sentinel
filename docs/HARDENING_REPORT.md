@@ -60,6 +60,10 @@ This branch replaces several prototype assumptions with explicit authority, acco
 - External OpenRouter/Anthropic and Razorpay test-provider calls were **not made**. Keys, external provider behavior and real signature configuration require separate integration verification.
 - The branch is published and backend/frontend CI jobs passed. The initial service health-command quoting error was corrected and verified by subsequent runs. The latest main README edit was incorporated into this branch. No deployment or merge into main was performed.
 
+## Risk intelligence follow-up
+
+The branch additionally implements local threat evidence, owner-scoped vendor profiles, bounded merchant correlation and a separate emergency dispatch gate. These are Sentinel controls inspired by the named product categories, not commercial integrations. See [the design and boundaries](RISK_INTELLIGENCE.md). Added tests cover source/identity/owner boundaries, evidence expiry, review restrictions, changes after approval, replay, global concurrent dispatch limits, exact amounts, control audit/version conflicts and the administrator UI. New migrations are checked from fresh, legacy and already-hardened databases. PostgreSQL validation of this follow-up is recorded after CI completes.
+
 ## Important remaining boundaries
 
 1. This project deliberately rejects live payment keys. Verified merchant identity, customer payment capture integration, real financial operations and authenticated AP2 protocol support are not claimed.

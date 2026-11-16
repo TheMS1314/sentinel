@@ -11,6 +11,8 @@ from app.models.db import (
     PolicyRecord,
     PaymentRecord,
     ReviewEvent,
+    IntelligenceAssessment,
+    DispatchClaim,
 )
 from app.core.rule_engine import RuleEngine, ESCALATE, result_to_decision
 from app.core.llm_reasoner import LLMReasoner
@@ -20,6 +22,13 @@ from app.core.behavioral_baseline import BehavioralBaseline
 from app.core.risk_score import RiskScorer
 from app.core.validation import validate_request, validate_policy, paise, utc_timestamp
 from app.core.locking import agent_transaction
+from app.core.intelligence import (
+    assess,
+    dispatch_permission,
+    GUARD_LOCK,
+    processing_time,
+    confirmed_dispatch_threat,
+)
 from app.rag.case_retriever import CaseRetriever, PastCase
 
 
@@ -179,6 +188,18 @@ class SentinelOrchestrator:
                         decision.reasons.append(RiskScorer.format_reason(score))
                         decision.checked_rules.append("behavioral_baseline")
                         decision.decided_by = "behavioral_baseline"
+                if decision.verdict != "BLOCK":
+                    report = assess(self.db, policy, request)
+                    self.db.add(
+                        IntelligenceAssessment(
+                            request_id=request.request_id, report=report
+                        )
+                    )
+                    if report["recommendation"] in ("HOLD", "BLOCK"):
+                        decision.verdict = report["recommendation"]
+                        decision.reasons.extend(report["signals"])
+                        decision.checked_rules.append("risk_intelligence")
+                        decision.decided_by = "risk_intelligence"
                 decision.policy_id, decision.policy_version = (
                     policy.policy_id,
                     policy.version,
@@ -202,28 +223,45 @@ class SentinelOrchestrator:
     def dispatch_payment(self, request_id):
         # A durable pending row is an outbox entry. Claim before external IO.
         # Unknown outcomes must be reconciled, NEVER blindly resubmitted.
-        claimed = self.db.execute(
-            update(PaymentRecord)
-            .where(
-                PaymentRecord.request_id == request_id, PaymentRecord.state == "pending"
+        with agent_transaction(self.db, GUARD_LOCK):
+            payment = (
+                self.db.query(PaymentRecord)
+                .filter_by(request_id=request_id)
+                .populate_existing()
+                .first()
             )
-            .values(state="processing")
-        ).rowcount
-        payment = (
-            self.db.query(PaymentRecord)
-            .filter_by(request_id=request_id)
-            .populate_existing()
-            .first()
-        )
-        if not payment:
-            self.db.rollback()
-            return {"status": "not_sent"}
-        if claimed != 1:
-            result = {"status": payment.state, "order_id": payment.order_id}
-            self.db.commit()
-            return result
-        amount = payment.amount_paise / 100
-        self.db.commit()
+            if not payment:
+                return {"status": "not_sent"}
+            if payment.state != "pending":
+                return {"status": payment.state, "order_id": payment.order_id}
+            blocked = dispatch_permission(
+                self.db, payment
+            ) or confirmed_dispatch_threat(self.db, request_id)
+            if blocked:
+                payment.error = blocked
+                payment.updated_at = processing_time(self.db)
+                self.audit.update_razorpay_status(request_id, "guard_hold", None)
+                return {"status": "guard_hold", "reason": blocked}
+            claimed = self.db.execute(
+                update(PaymentRecord)
+                .where(
+                    PaymentRecord.request_id == request_id,
+                    PaymentRecord.state == "pending",
+                )
+                .values(state="processing", error=None)
+            ).rowcount
+            if claimed != 1:
+                raise ConflictError("Payment dispatch claim changed concurrently")
+            self.db.add(
+                DispatchClaim(
+                    request_id=request_id,
+                    amount_paise=payment.amount_paise,
+                    claimed_at=processing_time(self.db),
+                )
+            )
+            amount = payment.amount_paise / 100
+        # A freeze cannot recall a call already claimed. The global guard lock
+        # is released before IO and the claim is visible to subsequent checks.
         try:
             result = self.gateway.create_order(
                 amount, request_id, {"request_id": request_id}
@@ -313,6 +351,9 @@ class SentinelOrchestrator:
                     raise ConflictError(
                         "Current policy rejects approval: " + "; ".join(check.reasons)
                     )
+                current_intelligence = assess(self.db, policy, request)
+                if current_intelligence["recommendation"] == "BLOCK":
+                    raise ConflictError("Current threat intelligence rejects approval")
                 self.db.add(
                     PaymentRecord(
                         request_id=request_id,

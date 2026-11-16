@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Activity, ShieldCheck, BarChart3 } from "lucide-react";
 import { api } from "./api";
+import RiskIntelligence from "./components/RiskIntelligence";
 import LiveFeed from "./components/LiveFeed";
 import PolicyEditor from "./components/PolicyEditor";
 import ScenarioRunner from "./components/ScenarioRunner";
@@ -18,6 +19,7 @@ const TABS = [
   { id: "feed", label: "Live feed", Icon: Activity },
   { id: "policy", label: "Policy", Icon: ShieldCheck },
   { id: "eval", label: "Evaluation", Icon: BarChart3 },
+  { id: "risk", label: "Risk intelligence", Icon: ShieldCheck },
 ];
 
 export function Dashboard({ identity, onLogout }) {
@@ -298,7 +300,7 @@ export function Dashboard({ identity, onLogout }) {
             <button onClick={onLogout} className="text-xs text-textmuted">Sign out ({identity.subject})</button>
             <AgentSelector agents={agents} selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
             <nav className="flex gap-1 bg-surface2/60 p-1 rounded-lg border border-border">
-              {TABS.filter(t => t.id !== "policy" || ["admin", "owner"].includes(identity.role)).map((t) => {
+              {TABS.filter(t => (t.id !== "policy" || ["admin", "owner"].includes(identity.role)) && (t.id !== "risk" || identity.role === "admin")).map((t) => {
                 const active = tab === t.id;
                 return (
                   <button
@@ -382,6 +384,7 @@ export function Dashboard({ identity, onLogout }) {
         )}
 
         {tab === "eval" && <EvalResults report={evalReport} />}
+        {tab === "risk" && identity.role === "admin" && <RiskIntelligence />}
       </main>
     </div>
   );

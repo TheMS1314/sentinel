@@ -12,10 +12,23 @@ def upgrade():
     from app.models.db import Base
 
     bind = op.get_bind()
+    # Later revisions own their tables; adoption must not create them early.
+    core_tables = [
+        Base.metadata.tables[name]
+        for name in (
+            "policies",
+            "transactions",
+            "decisions",
+            "payments",
+            "review_events",
+            "browser_sessions",
+            "provider_events",
+        )
+    ]
     inspector = sa.inspect(bind)
     tables = set(inspector.get_table_names())
     if "transactions" not in tables:
-        Base.metadata.create_all(bind)
+        Base.metadata.create_all(bind, tables=core_tables)
         return
     # Fail before changes if legacy policy history cannot be made unambiguous.
     duplicate = bind.execute(
@@ -78,7 +91,7 @@ def upgrade():
             batch.create_unique_constraint(
                 "uq_policy_agent_version", ["agent_id", "version"]
             )
-    Base.metadata.create_all(bind)
+    Base.metadata.create_all(bind, tables=core_tables)
     for index in Base.metadata.tables["transactions"].indexes:
         index.create(bind, checkfirst=True)
     # Legacy approvals are conservatively reserved as UNKNOWN. Migration does

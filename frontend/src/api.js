@@ -76,4 +76,8 @@ export const api = {
       body: JSON.stringify({ human_verdict: humanVerdict }),
     }),
   evalReport: () => request("/eval/report"),
+  riskOverview: () => request("/risk/overview"),
+  saveRiskGuard: (body) => request("/risk/guard", {method: "POST", body: JSON.stringify(body)}),
+  saveMerchantRisk: (body) => request("/risk/merchants", {method: "POST", body: JSON.stringify(body)}),
+  saveThreatIndicator: (body) => request("/risk/indicators", {method: "POST", body: JSON.stringify(body)}),
 };

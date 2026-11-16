@@ -113,5 +113,40 @@ def test_creates_fresh_schema(migration_database):
         "payments",
         "review_events",
         "browser_sessions",
+        "merchant_risk_profiles",
+        "threat_indicators",
+        "intelligence_assessments",
+        "dispatch_guard",
+        "dispatch_claims",
+        "risk_control_events",
     }.issubset(sa.inspect(engine).get_table_names())
     upgrade(url)
+
+
+def test_upgrades_already_hardened_schema(migration_database):
+    url, engine = migration_database
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "0001_hardened",
+        ],
+        env=dict(os.environ, SENTINEL_DATABASE_URL=url),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "dispatch_guard" not in sa.inspect(engine).get_table_names()
+    upgrade(url)
+    assert "dispatch_guard" in sa.inspect(engine).get_table_names()
+    with engine.connect() as conn:
+        assert (
+            conn.execute(
+                sa.text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            == "0002_risk_intelligence"
+        )

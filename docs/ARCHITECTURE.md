@@ -35,6 +35,14 @@ Live responses are locally validated for verdict, reasoning and finite confidenc
 
 Risk uses approved-order history, excluding unresolved unknown executions. Amount z-score, circular hour distance and normalized merchant/category familiarity produce a 0..100 heuristic with a 30-point review threshold. It can only downgrade approval to HOLD. Model self-confidence and risk are separate fields in persistence and UI. Weights are not calibrated probabilities.
 
+## Local risk intelligence and emergency dispatch guard
+
+Non-blocked decisions receive an immutable original intelligence snapshot: owner-scoped merchant/domain posture evidence, exact-domain threat matches, and bounded same-owner relation signals. Sources are explicitly operator/synthetic; commercial providers are disconnected. Stale evidence and uncalibrated exposure/coordination signals cause review; confirmed operator indicators with an operator mapping block. Unknown coverage never grants authority.
+
+Payment dispatch obtains a separate global advisory transaction lock, rechecks versioned emergency controls and current confirmed threats, then commits a unique dispatch claim with the processing transition before external IO. Count/amount windows include failed and unknown claims. A freeze stops new claims, while previous claims may complete. Paused payments stay pending and reserved; the outbox retries them fairly by last-attempt time. Review actions cannot override a current confirmed threat. This is a separate control inside the same application/database, not a fault-isolated network service.
+
+Administrator evidence/guard updates share the dispatch lock and record actor plus before/after state. See [risk intelligence design](RISK_INTELLIGENCE.md) for default behavior, matching limits, source freshness, APIs, and future licensed connectors.
+
 ## Queue, quotas and failure recovery
 
 Redis Streams consumer groups keep unacknowledged entries pending. Workers renew leases during processing and reclaim expired pending entries after interruption. Completion writes, acknowledgement and stream removal are atomic. Enqueue capacity and batch writes are atomic in normal Redis operation. Durable request IDs and database claims are required because delivery is at least once.

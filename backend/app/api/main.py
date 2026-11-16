@@ -99,6 +99,9 @@ async def recover_outbox():
                     r[0]
                     for r in db.query(PaymentRecord.request_id)
                     .filter_by(state="pending")
+                    .order_by(
+                        PaymentRecord.updated_at.asc(), PaymentRecord.request_id.asc()
+                    )
                     .limit(50)
                     .all()
                 ]
@@ -414,6 +417,7 @@ def _serialize_transaction(tx: TransactionRecord) -> dict:
         "confidence": decision.confidence if decision else None,
         "model_version": decision.model_version if decision else None,
         "risk_score": decision.risk_score if decision else None,
+        "intelligence": tx.intelligence.report if tx.intelligence else None,
         "policy_version": decision.policy_version if decision else None,
         "llm_mode": decision.llm_mode if decision else None,
         "similar_past_cases": decision.similar_past_cases if decision else [],
@@ -910,6 +914,9 @@ async def provider_webhook(request: Request, db: Session = Depends(get_session))
 
 
 app.include_router(secured)
+from app.api.risk import router as risk_router
+
+app.include_router(risk_router)
 
 
 @app.get(

@@ -1,7 +1,7 @@
 import { VerdictBadge, Pill } from "./Badges";
 import { humanizeScenarioTag } from "../scenarioLabels";
 import { useState } from "react";
-import { Zap, Bot, ScrollText, Clock, Inbox, Search, X, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
+import { ShieldCheck, Zap, Bot, ScrollText, Clock, Inbox, Search, X, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 
 const VERDICT_EDGE = {
   APPROVE: "before:bg-approve",
@@ -41,6 +41,7 @@ function formatRelative(iso) {
 }
 
 function DecisionSource({ decidedBy }) {
+  if (decidedBy === "risk_intelligence") return <Pill muted icon={ShieldCheck}>risk intelligence</Pill>;
   if (decidedBy === "llm_reasoner") {
     return <Pill muted icon={Bot}>LLM reasoner</Pill>;
   }
@@ -68,6 +69,9 @@ function TransactionDetails({ tx }) {
     ["Reasoner mode", tx.llm_mode || "—"],
 
     ["Razorpay status", tx.razorpay_status || "—"],
+    ["Intelligence coverage", tx.intelligence?.coverage || "Not assessed"],
+    ["Vendor evidence", tx.intelligence?.vendor?.status || "Unknown"],
+    ["Threat evidence", tx.intelligence?.threat?.status || "Not assessed"],
     ["Stated intent", tx.stated_intent || "—"],
   ];
   return (
@@ -104,6 +108,8 @@ function TransactionDetails({ tx }) {
         </div>
       )}
       </div>
+      {tx.intelligence?.signals?.length > 0 && <ul className="mt-3 text-xs text-textmuted">{tx.intelligence.signals.map((signal, index) => <li key={index}>{signal}</li>)}</ul>}
+      {tx.razorpay_status === "guard_hold" && <p className="mt-2 text-xs text-hold">Payment dispatch paused; approval is not settlement. Budget remains reserved.</p>}
     </div>
   );
 }
