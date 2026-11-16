@@ -1,6 +1,6 @@
 # Sentinel hardening review
 
-This branch replaces several prototype assumptions with explicit authority, accounting and recovery boundaries. Main remains unchanged; publication is pending permission after automatic upload review rejected the push.
+This branch replaces several prototype assumptions with explicit authority, accounting and recovery boundaries. The changes are published on `codex/sentinel-hardening` in [pull request #1](https://github.com/TheMS1314/sentinel/pull/1). Main remains unmerged.
 
 ## Gap-by-gap outcome
 
@@ -58,7 +58,7 @@ This branch replaces several prototype assumptions with explicit authority, acco
 - Compose configuration validated. Docker images and full deployment could not be started because the local Docker daemon is unavailable.
 - PostgreSQL service/concurrency execution is prepared in CI but **has not run**. Local database tests use SQLite, whose locks do not establish PostgreSQL cross-replica behavior. The macOS sandbox prevents starting a separate PostgreSQL shared-memory server here.
 - External OpenRouter/Anthropic and Razorpay test-provider calls were **not made**. Keys, external provider behavior and real signature configuration require separate integration verification.
-- No deployment, merge, or GitHub upload was completed. Automatic review blocked publication of the full changed branch; reviewable local code and tests remain available.
+- The branch is published and GitHub CI is running. The first run exposed a service health-command quoting error; that configuration is corrected. No deployment or merge was performed.
 
 ## Important remaining boundaries
 
@@ -71,6 +71,6 @@ This branch replaces several prototype assumptions with explicit authority, acco
 
 ## Review and publication
 
-Review the source and test changes on local branch `codex/sentinel-hardening`. The proposed upload contains repository source, synthetic test/evaluation data, configuration examples, migration/CI definitions and documentation. Generated credentials, `.env` files, virtual environments, databases and logs are excluded from Git.
+Review the source and test changes in [pull request #1](https://github.com/TheMS1314/sentinel/pull/1), branch `codex/sentinel-hardening`. The branch contains repository source, synthetic test/evaluation data, configuration examples, migration/CI definitions and documentation. Generated credentials, `.env` files, virtual environments, databases and logs are excluded from Git.
 
-Publishing this branch to `TheMS1314/sentinel` would make those changes available in that public repository and enable its added CI workflow. It would not merge to main or deploy the application.
+The branch is available in the public `TheMS1314/sentinel` repository with CI enabled. Publication does not merge to main or deploy the application.
