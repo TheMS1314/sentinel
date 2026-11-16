@@ -108,7 +108,7 @@ def fuzz_combined_attacks(n: int = 40, seed: int = 20260824) -> list:
         cases.append({
             "category": "combined_attack",
             "stated_intent": template.format(action=action),
-            "amount": rng.uniform(2001, 6000),
+            "amount": round(rng.uniform(2001, 6000), 2),
             "merchant_category": rng.choice(list(MERCHANTS_BY_CATEGORY.keys())),
         })
     return cases

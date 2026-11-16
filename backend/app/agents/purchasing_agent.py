@@ -15,10 +15,8 @@ Two modes:
                     a black box, so the pitch video can clearly narrate
                     "here we simulate a compromised agent attempting X".
 
-The agent's "reasoning" about what to buy uses the shared LLMClient
-(mock or live, whichever is configured) -- this is deliberate: even in
-mock mode, the graph structure, state transitions, and request generation
-logic are fully exercised and testable.
+Purchases are synthetic and seeded; they do not call a live language model.
+The state transitions and generation logic are exercised in regression tests.
 """
 
 from __future__ import annotations
@@ -79,23 +77,7 @@ class PurchasingAgent:
 
         mock = self._mock_decision(state)
 
-        system_prompt = (
-            "You are simulating an AI purchasing agent acting on a human's "
-            "behalf. Given the authorized goal and current step, decide the "
-            "next purchase to attempt. Respond ONLY with JSON: "
-            '{"merchant_name": str, "merchant_category": str, "amount": number, '
-            '"stated_intent": str}'
-        )
-        user_prompt = (
-            f"Goal: {state['goal']}\n"
-            f"Mode: {state['mode']}\n"
-            f"Drift type (if adversarial): {state['drift_type']}\n"
-            f"Step: {state['step']} of {state['max_steps']}\n"
-            "Decide the next purchase attempt."
-        )
         decision = mock
-        if "error" in decision:
-            decision = mock  # graceful fallback if live call returns bad JSON
 
         request = self._to_transaction_request(state, decision)
         state["generated_requests"].append(request)

@@ -58,7 +58,7 @@ def build_prevalence_dataset(total: int = 500) -> list:
         i += 1
         cases.append(GoldenCase(
             case_id=f"prev_{i:04d}", category="clean_approve", policy_overrides={},
-            request=_req(i, merchant_name=rng.choice(GROCERY), amount=rng.uniform(100, 1950),
+            request=_req(i, merchant_name=rng.choice(GROCERY), amount=round(rng.uniform(100, 1950), 2),
                          requested_at_hour=rng.randint(7, 21)),
             expected_verdict="APPROVE", notes="Realistic clean transaction.",
         ))
@@ -67,7 +67,7 @@ def build_prevalence_dataset(total: int = 500) -> list:
         i += 1
         cases.append(GoldenCase(
             case_id=f"prev_{i:04d}", category="amount_cap", policy_overrides={},
-            request=_req(i, amount=rng.uniform(2001, 4000)),
+            request=_req(i, amount=round(rng.uniform(2001, 4000), 2)),
             expected_verdict="BLOCK", notes="Realistic amount cap violation.",
         ))
 
@@ -76,7 +76,7 @@ def build_prevalence_dataset(total: int = 500) -> list:
         cases.append(GoldenCase(
             case_id=f"prev_{i:04d}", category="category_violation", policy_overrides={},
             request=_req(i, merchant_name=rng.choice(ELECTRONICS), merchant_category="electronics",
-                         amount=rng.uniform(200, 1500)),
+                         amount=round(rng.uniform(200, 1500), 2)),
             expected_verdict="BLOCK", notes="Realistic category violation.",
         ))
 
@@ -106,7 +106,7 @@ def build_prevalence_dataset(total: int = 500) -> list:
         cases.append(GoldenCase(
             case_id=f"prev_{i:04d}", category="merchant_blocklist",
             policy_overrides={"blocked_merchants": BLOCKED},
-            request=_req(i, merchant_name=rng.choice(BLOCKED), amount=rng.uniform(200, 1000)),
+            request=_req(i, merchant_name=rng.choice(BLOCKED), amount=round(rng.uniform(200, 1000), 2)),
             expected_verdict="BLOCK", notes="Realistic blocked-merchant attempt.",
         ))
 

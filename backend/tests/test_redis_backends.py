@@ -13,7 +13,7 @@ import asyncio
 
 try:
     import redis as redis_lib
-    _client = redis_lib.Redis.from_url("redis://localhost:6379/0")
+    _client = redis_lib.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), socket_connect_timeout=1, socket_timeout=1)
     _client.ping()
     REDIS_AVAILABLE = True
 except Exception:
@@ -68,7 +68,8 @@ class TestRedisQueue:
             queue = RedisEvaluationQueue(
                 submit_fn=fake_submit,
                 num_workers=2,
-                queue_key="sentinel:test:queue:pending",
+                queue_key="sentinel:test:queue:" + __import__("uuid").uuid4().hex,
+                redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             )
             await queue.start()
             job_id = await queue.enqueue({"value": 21})
@@ -95,7 +96,8 @@ class TestRedisQueue:
             queue = RedisEvaluationQueue(
                 submit_fn=failing_submit,
                 num_workers=1,
-                queue_key="sentinel:test:queue:pending",
+                queue_key="sentinel:test:queue:" + __import__("uuid").uuid4().hex,
+                redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             )
             await queue.start()
             job_id = await queue.enqueue({"value": 1})
@@ -110,11 +112,11 @@ class TestRedisQueue:
 
         job = asyncio.run(run())
         assert job["status"] == "FAILED"
-        assert "intentional test failure" in job["error"]
+        assert job["error"] == "Evaluation failed; inspect server logs"
 
     def test_unknown_job_id_returns_none(self):
         from app.core.redis_queue import RedisEvaluationQueue
-        queue = RedisEvaluationQueue(submit_fn=lambda p: p, num_workers=1)
+        queue = RedisEvaluationQueue(submit_fn=lambda p: p, num_workers=1, redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
         assert queue.get_job("job_does_not_exist") is None
 
 

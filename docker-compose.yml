@@ -1,101 +1,72 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: sentinel-postgres
     environment:
       POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python3 scripts/setup_dev.py first}
       POSTGRES_DB: sentinel
-    ports:
-      - "5432:5432"
     volumes:
       - sentinel_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      test: [CMD-SHELL, pg_isready -U sentinel]
       interval: 5s
       timeout: 5s
-      retries: 5
-
+      retries: 10
+    restart: unless-stopped
   redis:
     image: redis:7-alpine
-    container_name: sentinel-redis
-    ports:
-      - "6379:6379"
+    command: [redis-server, --appendonly, 'yes', --appendfsync, everysec]
+    volumes:
+      - sentinel_redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [CMD, redis-cli, ping]
       interval: 5s
       timeout: 5s
-      retries: 5
-
-  # Initialize the shared database schema exactly once before
-  # either backend replica starts.
+      retries: 10
+    restart: unless-stopped
   db-init:
     build: ./backend
-    container_name: sentinel-db-init
+    env_file: ./backend/.env
+    environment:
+      SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+    command: [python, -m, alembic, -c, alembic.ini, upgrade, head]
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
-    env_file:
-      - ./backend/.env
-    volumes:
-      - ./backend:/app
-    command: python -c "from app.models.db import init_db; init_db()"
-
-  # Two backend replicas sharing the same Postgres and Redis.
-  backend1:
+  backend1: &backend
     build: ./backend
-    container_name: sentinel-backend1
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
-    environment:
-      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
+    env_file: ./backend/.env
+    environment: &backend-env
+      SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
       REDIS_URL: redis://redis:6379/0
-      CACHE_BACKEND: redis
       QUEUE_BACKEND: redis
+      RATE_LIMIT_BACKEND: redis
       SENTINEL_INSTANCE_ID: backend1
-    env_file:
-      - ./backend/.env
-    volumes:
-      - ./backend:/app
-
-  backend2:
-    build: ./backend
-    container_name: sentinel-backend2
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       db-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  backend2:
+    <<: *backend
     environment:
-      SENTINEL_DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
-      REDIS_URL: redis://redis:6379/0
-      CACHE_BACKEND: redis
-      QUEUE_BACKEND: redis
+      <<: *backend-env
       SENTINEL_INSTANCE_ID: backend2
-    env_file:
-      - ./backend/.env
-    volumes:
-      - ./backend:/app
-
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
   nginx:
-    image: nginx:alpine
-    container_name: sentinel-nginx
-    depends_on:
-      - backend1
-      - backend2
-    ports:
-      - "8000:80"
+    image: nginxinc/nginx-unprivileged:alpine
+    ports: ['127.0.0.1:8000:8080']
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-
+    depends_on: [backend1, backend2, frontend]
+    restart: unless-stopped
 volumes:
   sentinel_pgdata:
+  sentinel_redisdata:

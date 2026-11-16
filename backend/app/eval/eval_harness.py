@@ -34,6 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 
+# Never evaluate against application data or invoke a payment provider.
+import tempfile
+os.environ['SENTINEL_DATABASE_URL'] = 'sqlite:///' + tempfile.mktemp(prefix='sentinel-eval-', suffix='.sqlite')
+os.environ['RAZORPAY_KEY_ID'] = ''
+os.environ['RAZORPAY_KEY_SECRET'] = ''
+os.environ['SENTINEL_ENV'] = 'evaluation'
+
 from app.models.db import init_db, SessionLocal
 from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit
 from app.core.orchestrator import SentinelOrchestrator
@@ -92,6 +99,11 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
     y_true, y_pred, decided_by_list, misses = [], [], [], []
 
     for case in cases:
+        from app.core.validation import validate_request, utc_timestamp
+        for row in [case['request'], *case['history']]:
+            validate_request(TransactionRequest(**row))
+        if any(utc_timestamp(h['requested_at_iso']) > utc_timestamp(case['request']['requested_at_iso']) for h in case['history']):
+            raise ValueError('Future history in ' + case['case_id'])
         policy, agent_id = _policy_from_case(case)
         unique_suffix = "_" + uuid.uuid4().hex[:6]
 
@@ -139,7 +151,12 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "llm_provider": os.environ.get("LLM_PROVIDER", "mock"),
+        "llm_provider": orchestrator.reasoner.llm.provider,
+        "runtime": {"llm_mode": "mock" if orchestrator.reasoner.llm.mock_mode else "live",
+                    "model": orchestrator.reasoner.llm.model,
+                    "prompt_version": __import__('app.core.llm_reasoner', fromlist=['PROMPT_VERSION']).PROMPT_VERSION,
+                    "retrieval": os.environ.get('SENTINEL_DISABLE_RETRIEVAL') != '1',
+                    "dataset_sha256": __import__('hashlib').sha256(open(dataset_path, 'rb').read()).hexdigest()},
         "total_cases": len(cases),
         "overall_accuracy": round(accuracy, 4),
         "per_class": {
@@ -162,6 +179,11 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
         "misses": misses,
     }
 
+    report['safety'] = {
+        'unsafe_approvals': sum(1 for t,p in zip(y_true,y_pred) if p == 'APPROVE' and t != 'APPROVE'),
+        'unnecessary_holds': sum(1 for t,p in zip(y_true,y_pred) if p == 'HOLD' and t == 'APPROVE'),
+        'hold_rate': sum(p == 'HOLD' for p in y_pred) / len(y_pred)}
+    db.close()
     if verbose:
         _print_report(report)
 
@@ -193,7 +215,7 @@ def _print_report(report: dict):
             print(f"  {decider:15} no cases routed here")
 
     if report["by_decider"]["llm_reasoner"]["n"] > 0:
-        if report["llm_provider"] == "mock":
+        if report["runtime"]["llm_mode"] == "mock":
             print(
                 "\n  NOTE: llm_reasoner accuracy under MOCK mode is not a meaningful measure of\n"
                 "  real semantic reasoning -- the mock decision logic uses the same keyword\n"
@@ -219,7 +241,7 @@ if __name__ == "__main__":
     import sys
     dataset_path = sys.argv[1] if len(sys.argv) > 1 else None
     report = run_eval(dataset_path)
-    out_name = "hard_eval_report.json" if dataset_path else "eval_report.json"
+    out_name = ("prevalence_eval_report.json" if dataset_path and "prevalence" in dataset_path else "hard_eval_report.json") if dataset_path else "eval_report.json"
     out_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", out_name)
     out_path = os.path.abspath(out_path)
     with open(out_path, "w") as f:

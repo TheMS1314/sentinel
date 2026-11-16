@@ -71,6 +71,11 @@ def _req(i: int, **overrides) -> dict:
     r = dict(BASE_REQUEST)
     r["request_id"] = f"golden_req_{i:03d}"
     r.update(overrides)
+    from datetime import datetime
+    if 'requested_at_iso' in overrides and 'requested_at_hour' not in overrides:
+        r['requested_at_hour'] = datetime.fromisoformat(r['requested_at_iso']).hour
+    else:
+        r['requested_at_iso'] = datetime.fromisoformat(r['requested_at_iso']).replace(hour=r['requested_at_hour']).isoformat()
     return r
 
 

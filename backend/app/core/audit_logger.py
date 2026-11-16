@@ -12,9 +12,9 @@ complete and consistent.
 """
 
 from __future__ import annotations
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from app.models.db import TransactionRecord, DecisionRecord
+from app.models.db import TransactionRecord, DecisionRecord, PaymentRecord
 from app.models.policy import TransactionRequest, Decision, HistoryItem
 
 
@@ -36,11 +36,11 @@ class AuditLogger:
             scenario_tag=scenario_tag,
         )
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(record)
         return record
 
-    def log_decision(self, decision: Decision) -> DecisionRecord:
+    def log_decision(self, decision: Decision, policy=None) -> DecisionRecord:
         record = DecisionRecord(
             request_id=decision.request_id,
             verdict=decision.verdict,
@@ -50,9 +50,13 @@ class AuditLogger:
             similar_past_cases=decision.similar_past_cases,
             confidence=decision.confidence,
             model_version=decision.model_version,
+            policy_id=decision.policy_id, policy_version=decision.policy_version,
+            policy_snapshot=policy.to_dict() if policy else None,
+            risk_score=decision.risk_score, prompt_version=decision.prompt_version,
+            prompt_hash=decision.prompt_hash, llm_mode=decision.llm_mode, token_usage=decision.token_usage,
         )
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(record)
         return record
 
@@ -61,7 +65,7 @@ class AuditLogger:
         if record:
             record.razorpay_status = status
             record.razorpay_ref = ref
-            self.db.commit()
+            self.db.flush()
 
     def resolve_hold(self, request_id: str, human_verdict: str):
         """Human resolves a HOLD (HITL) -- APPROVE or BLOCK, recorded distinctly
@@ -69,33 +73,23 @@ class AuditLogger:
         record = self.db.query(DecisionRecord).filter_by(request_id=request_id).first()
         if record:
             record.human_override = human_verdict
-            self.db.commit()
+            self.db.flush()
 
-    def get_recent_transactions_for_agent(self, agent_id: str, limit: int = 200) -> list[HistoryItem]:
-        rows = (
-            self.db.query(TransactionRecord)
-            .filter_by(agent_id=agent_id)
-            .order_by(TransactionRecord.requested_at_iso.desc())
-            .limit(limit)
-            .all()
-        )
+    def get_recent_transactions_for_agent(self, agent_id: str, limit=None) -> list[HistoryItem]:
+        # Full relevant history is required for budget/velocity correctness.
+        # Eager load decisions and ledger state to avoid per-row lookups.
+        rows = (self.db.query(TransactionRecord, PaymentRecord.state, PaymentRecord.budget_day)
+                .outerjoin(PaymentRecord, PaymentRecord.request_id == TransactionRecord.request_id)
+                .options(joinedload(TransactionRecord.decision))
+                .filter(TransactionRecord.agent_id == agent_id)
+                .order_by(TransactionRecord.requested_at_iso.desc()).all())
         items = []
-        for r in rows:
-            decision = self.db.query(DecisionRecord).filter_by(request_id=r.request_id).first()
-            request = TransactionRequest(
-                request_id=r.request_id,
-                agent_id=r.agent_id,
-                merchant_name=r.merchant_name,
-                merchant_category=r.merchant_category,
-                amount=r.amount,
-                requested_at_hour=r.requested_at_hour,
-                requested_at_iso=r.requested_at_iso,
-                stated_intent=r.stated_intent,
-                raw_agent_goal=r.raw_agent_goal,
-            )
-            items.append(HistoryItem(
-                request=request,
-                verdict=decision.verdict if decision else "UNKNOWN",
+        for r, state, budget_day in rows:
+            decision = r.decision
+            request = TransactionRequest(**{key: float(r.amount) if key == 'amount' else getattr(r, key)
+                for key in TransactionRequest.__dataclass_fields__})
+            items.append(HistoryItem(request=request,
+                verdict=decision.verdict if decision else 'UNKNOWN',
                 human_override=decision.human_override if decision else None,
-            ))
+                budget_day=budget_day, payment_status=state or ('not_sent' if decision else 'unknown')))
         return items

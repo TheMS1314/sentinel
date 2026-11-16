@@ -1,8 +1,4 @@
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-// Dev-only: matches the dev-mode fallback the backend uses when
-// SENTINEL_API_KEY is unset. In any real deployment this should come
-// from a build-time env var, never hardcoded like this.
-const API_KEY = import.meta.env.VITE_SENTINEL_API_KEY || "dev-only-insecure-key-change-me";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 const REQUEST_TIMEOUT_MS = 15000;
 
 class ApiError extends Error {
@@ -18,8 +14,9 @@ async function request(path, options = {}) {
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     res = await fetch(`${BASE_URL}${path}`, {
-      headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+      headers: { "Content-Type": "application/json", "X-Sentinel-CSRF": "1" },
       signal: controller.signal,
+      credentials: "include",
       ...options,
     });
   } catch (err) {
@@ -33,6 +30,7 @@ async function request(path, options = {}) {
     clearTimeout(timeoutId);
   }
   if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event("sentinel:unauthorized"));
     let message = `Request failed (${res.status})`;
     try {
       const body = await res.json();
@@ -56,6 +54,9 @@ function qs(params) {
 }
 
 export const api = {
+  login: (credential) => request("/auth/login", {method: "POST", body: JSON.stringify({credential})}),
+  me: () => request("/auth/me"),
+  logout: () => request("/auth/logout", {method: "POST"}),
   ApiError,
   createPolicy: (policy) => request("/policies", { method: "POST", body: JSON.stringify(policy) }),
   listPolicies: () => request("/policies"),

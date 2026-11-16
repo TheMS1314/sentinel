@@ -1,23 +1,8 @@
-"""
-Razorpay Gateway
-================
-Thin wrapper around Razorpay's test-mode API. Only APPROVED decisions
-ever reach this module -- HOLD and BLOCK verdicts stop before this point,
-by design. This file has exactly one job: take an approved transaction
-and actually attempt it against Razorpay's test-mode order API.
-
-Falls back to a clearly-labeled mock mode if no API keys are configured,
-so the rest of the system (and the demo) still runs end-to-end without
-requiring live credentials -- but logs loudly that it's in mock mode so
-nobody mistakes mock behavior for a real integration.
-"""
-
-from __future__ import annotations
+"""Test-order integration. Live keys are rejected; ambiguous outcomes need reconciliation."""
 import os
 import logging
-
-logger = logging.getLogger("sentinel.razorpay_gateway")
-
+from app.core.validation import paise
+logger = logging.getLogger('sentinel.razorpay_gateway')
 try:
     import razorpay
 except ImportError:
@@ -26,43 +11,37 @@ except ImportError:
 
 class RazorpayGateway:
     def __init__(self):
-        key_id = os.environ.get("RAZORPAY_KEY_ID", "")
-        key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "")
-        self.mock_mode = not (key_id and key_secret and razorpay)
+        key = os.environ.get('RAZORPAY_KEY_ID', '')
+        secret = os.environ.get('RAZORPAY_KEY_SECRET', '')
+        if key and not key.startswith('rzp_test_'):
+            raise RuntimeError('Only Razorpay TEST credentials are supported')
+        self.mock_mode = not (key and secret and razorpay)
+        if self.mock_mode and os.environ.get('SENTINEL_ENV') == 'production':
+            raise RuntimeError('Production-profile startup requires explicit Razorpay test credentials')
+        self.client = None if self.mock_mode else razorpay.Client(auth=(key, secret))
+
+    def create_order(self, amount_inr, request_id, notes):
+        cents = paise(amount_inr)
         if self.mock_mode:
-            logger.warning(
-                "RazorpayGateway running in MOCK MODE -- no API keys configured. "
-                "Set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET in backend/.env for "
-                "real test-mode integration."
-            )
-            self.client = None
-        else:
-            self.client = razorpay.Client(auth=(key_id, key_secret))
-
-    def create_order(self, amount_inr: float, request_id: str, notes: dict) -> dict:
-        """
-        Creates a Razorpay order in test mode for an APPROVED transaction.
-        Amount is converted to paise (Razorpay's base unit) as required by the API.
-
-        Returns a dict with at least: {"status": "created"|"mock"|"failed", "order_id": str|None}
-        """
-        amount_paise = int(round(amount_inr * 100))
-
-        if self.mock_mode:
-            fake_order_id = f"mock_order_{request_id}"
-            logger.info(f"[MOCK] Would create Razorpay order for ₹{amount_inr:.2f} ({fake_order_id})")
-            return {"status": "mock", "order_id": fake_order_id, "amount_paise": amount_paise}
-
+            return {'status': 'mock', 'order_id': f'mock_order_{request_id}', 'amount_paise': cents}
+        # Razorpay receipt max length is 40. Stable digest retains idempotent correlation.
+        import hashlib
+        receipt = hashlib.sha256(request_id.encode()).hexdigest()[:40]
         try:
-            order = self.client.order.create(
-                {
-                    "amount": amount_paise,
-                    "currency": "INR",
-                    "receipt": request_id,
-                    "notes": notes,
-                }
-            )
-            return {"status": "created", "order_id": order.get("id"), "amount_paise": amount_paise}
-        except Exception as e:
-            logger.error(f"Razorpay order creation failed for {request_id}: {e}")
-            return {"status": "failed", "order_id": None, "error": str(e)}
+            order = self.client.order.create({'amount': cents, 'currency': 'INR', 'receipt': receipt,
+                                             'notes': dict(notes, sentinel_request_id=request_id)})
+            if not order or not order.get('id'):
+                return {'status': 'unknown', 'error': 'Provider returned no order reference'}
+            return {'status': 'created', 'order_id': order['id'], 'amount_paise': cents}
+        except Exception:
+            # A timeout is not proof that an external side effect did not happen.
+            logger.exception('Gateway order outcome unknown; reconciliation required')
+            return {'status': 'unknown', 'order_id': None, 'error': 'Reconciliation required'}
+
+    def reconcile(self, order_id, request_id, amount_paise):
+        if self.mock_mode:
+            raise ValueError('Provider reconciliation requires test credentials')
+        order = self.client.order.fetch(order_id)
+        if order.get('amount') != amount_paise or order.get('currency') != 'INR' or order.get('notes', {}).get('sentinel_request_id') != request_id:
+            raise ValueError('Order does not match the reserved request')
+        return {'order_id': order_id, 'status': 'captured' if order.get('status') == 'paid' else 'created'}

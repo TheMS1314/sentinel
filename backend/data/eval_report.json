@@ -1,6 +1,13 @@
 {
-  "generated_at": "2026-09-04T07:29:03.088389+00:00",
+  "generated_at": "2026-11-16T18:32:10.127309+00:00",
   "llm_provider": "openrouter",
+  "runtime": {
+    "llm_mode": "mock",
+    "model": "anthropic/claude-sonnet-4.5",
+    "prompt_version": "sentinel-intent-v2",
+    "retrieval": true,
+    "dataset_sha256": "92dfed0d03da1360478f3bd1ba108abe87b65b41f9a36e7eef31936eee9bc398"
+  },
   "total_cases": 89,
   "overall_accuracy": 1.0,
   "per_class": {
@@ -50,12 +57,17 @@
   "by_decider": {
     "rule_engine": {
       "accuracy": 1.0,
-      "n": 73
+      "n": 81
     },
     "llm_reasoner": {
       "accuracy": 1.0,
-      "n": 16
+      "n": 8
     }
   },
-  "misses": []
+  "misses": [],
+  "safety": {
+    "unsafe_approvals": 0,
+    "unnecessary_holds": 0,
+    "hold_rate": 0.15730337078651685
+  }
 }

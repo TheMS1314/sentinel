@@ -1,250 +1,234 @@
-"""
-Sentinel API
-=============
-FastAPI app exposing the orchestrator, policy management, transaction
-feed, HITL resolution, agent simulation triggers, and eval reports to
-the React dashboard.
-"""
-
-from __future__ import annotations
-import os
-import logging
-from datetime import timezone
-
+"""Scoped API for policy administration, agent requests and human review."""
 from app.core.env import load_env
-load_env()  # must run before any app import below reads os.environ
-from fastapi import FastAPI, Depends, HTTPException, Request, Query
+load_env()
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+import asyncio
+import json
+import logging
+import os
+import secrets
+import uuid
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel, Field
-from typing import Optional
-import uuid
-
-logger = logging.getLogger("sentinel.api")
-
-from app.models.db import init_db, get_session, TransactionRecord, DecisionRecord, PolicyRecord
+from app.models.db import (get_session, SessionLocal, TransactionRecord, DecisionRecord, PolicyRecord,
+                           BrowserSession, PaymentRecord)
 from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit
-from app.core.orchestrator import SentinelOrchestrator
-from app.core.job_queue import EvaluationQueue
-from app.core.redis_queue import make_queue
-from app.core.cache import policy_cache
-from app.core.auth import require_api_key
+from app.core.auth import Principal, require_api_key, require_agent, authenticate, credentials, digest
 from app.core.rate_limit import enforce_rate_limit
 from app.core.logging_middleware import StructuredLoggingMiddleware
-from app.models.db import SessionLocal
-from app.agents.purchasing_agent import PurchasingAgent, AdversarialDriftType
+from app.core.locking import agent_transaction
+from app.core.orchestrator import SentinelOrchestrator, ConflictError
+from app.core.schemas import PolicyIn, TransactionIn, BatchEvaluateIn, HoldResolutionIn, SimulateIn
+from app.core.redis_queue import make_queue
+from app.agents.purchasing_agent import PurchasingAgent
 
-app = FastAPI(title="Sentinel API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # dev-only; tighten before any real deployment
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.add_middleware(StructuredLoggingMiddleware)
+logger = logging.getLogger('sentinel.api')
 
 
-# ---------- Global error handling ----------
-# Every error path returns the same envelope shape ({"error": {...}}) so
-# the frontend never has to special-case FastAPI's default vs. a custom
-# HTTPException vs. an unhandled exception. Unhandled exceptions are
-# logged with a traceback server-side but never leak that traceback to
-# the client -- a stack trace in an API response is an information
-# disclosure bug, not just an ugly one.
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"message": exc.detail, "status_code": exc.status_code}},
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"error": {"message": "Invalid request", "status_code": 422, "details": exc.errors()}},
-    )
-
-
-@app.exception_handler(SQLAlchemyError)
-async def db_exception_handler(request: Request, exc: SQLAlchemyError):
-    logger.exception(f"Unhandled database error on {request.method} {request.url.path}")
-    return JSONResponse(
-        status_code=503,
-        content={"error": {"message": "Database temporarily unavailable", "status_code": 503}},
-    )
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception(f"Unhandled error on {request.method} {request.url.path}")
-    return JSONResponse(
-        status_code=500,
-        content={"error": {"message": "Internal server error", "status_code": 500}},
-    )
-
-
-from fastapi import APIRouter, Depends as _Depends
-
-# Every route except /health requires the API key. Using an included
-# router (rather than a global dependency on `app`) keeps /health
-# publicly reachable for uptime checks / load balancer health probes,
-# which themselves shouldn't need a credential.
-secured = APIRouter(dependencies=[_Depends(require_api_key), _Depends(enforce_rate_limit)])
-
-
-def _process_single_evaluation(payload: dict) -> dict:
-    """The actual synchronous evaluation work, run inside a worker thread
-    by the EvaluationQueue. Opens its own DB session since sessions are
-    not thread-safe to share across the queue's worker pool."""
+def _process_single_evaluation(payload):
+    payload = dict(payload)
+    scope = payload.pop('_submitted_by', None)
+    if scope:
+        row = next((r for r in credentials() if r['subject'] == scope), None)
+        if not row:
+            raise ValueError('Submitting credential has been revoked')
+        principal = authenticate(row['key'])
+    scenario = payload.pop('scenario_tag', '')
     db = SessionLocal()
     try:
-        agent_id = payload["agent_id"]
-        policy_record = (
-            db.query(PolicyRecord)
-            .filter_by(agent_id=agent_id, active=True)
-            .order_by(PolicyRecord.version.desc())
-            .first()
-        )
-        if not policy_record:
-            raise ValueError(f"No active policy for agent {agent_id}")
-        policy = AgentPolicy.from_dict(policy_record.policy_json)
-
-        payload.setdefault("request_id", f"req_{uuid.uuid4().hex[:10]}")
-        request = TransactionRequest(**{k: v for k, v in payload.items() if k != "scenario_tag"})
-
-        orchestrator = SentinelOrchestrator(db)
-        decision = orchestrator.evaluate_transaction(policy, request, scenario_tag=payload.get("scenario_tag", ""))
-        db.commit()
-        return decision.__dict__
+        policy = load_policy(payload['agent_id'], db)
+        if scope:
+            principal.require('admin', 'owner', 'agent')
+            require_agent(principal, payload['agent_id'], db)
+        request = TransactionRequest(**payload)
+        # Queued requests are evaluated against the latest trusted goal and clock.
+        if not scenario:
+            request.raw_agent_goal = policy.authorized_goal
+        return SentinelOrchestrator(db).evaluate_transaction(policy, request, scenario, actor_id=scope or "internal").__dict__
     finally:
         db.close()
 
 
-eval_queue = make_queue(submit_fn=_process_single_evaluation, num_workers=4)
+eval_queue = make_queue(_process_single_evaluation, num_workers=4)
 
 
-@app.on_event("startup")
-async def on_startup():
+async def recover_outbox():
+    while True:
+        def drain():
+            db = SessionLocal()
+            try:
+                ids = [r[0] for r in db.query(PaymentRecord.request_id).filter_by(state='pending').limit(50).all()]
+                for rid in ids:
+                    SentinelOrchestrator(db).dispatch_payment(rid)
+            finally:
+                db.close()
+        try:
+            await asyncio.to_thread(drain)
+        except Exception:
+            logger.exception('Payment outbox recovery failed')
+        await asyncio.sleep(5)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    credentials()  # fail closed on invalid production access configuration
+    if os.environ.get('SENTINEL_ENV') == 'production':
+        for name in ('QUEUE_BACKEND', 'RATE_LIMIT_BACKEND'):
+            if os.environ.get(name) != 'redis':
+                raise RuntimeError(f'Production requires {name}=redis')
     await eval_queue.start()
+    task = asyncio.create_task(recover_outbox())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await eval_queue.stop()
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    await eval_queue.stop()
+app = FastAPI(title='Sentinel API', lifespan=lifespan)
+app.add_middleware(CORSMiddleware,
+    allow_origins=os.environ.get('SENTINEL_ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(','),
+    allow_credentials=True, allow_methods=['GET', 'POST'],
+    allow_headers=['Content-Type', 'X-API-Key', 'X-Sentinel-CSRF', 'X-Request-ID'])
+app.add_middleware(StructuredLoggingMiddleware)
 
 
-# ---------- Schemas ----------
-
-class PolicyIn(BaseModel):
-    agent_id: str
-    owner_human_id: str
-    max_amount_per_txn: float = 2000.0
-    max_daily_total: float = 5000.0
-    allowed_categories: list[str] = ["grocery"]
-    blocked_merchants: list[str] = []
-    allowed_merchants: Optional[list[str]] = None
-    time_window_start: int = 6
-    time_window_end: int = 22
-    velocity_max_count: int = 3
-    velocity_window_minutes: int = 1440
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request, exc):
+    return JSONResponse(status_code=exc.status_code, headers=exc.headers,
+        content={'error': {'message': exc.detail, 'status_code': exc.status_code}})
 
 
-class HoldResolutionIn(BaseModel):
-    human_verdict: str  # APPROVE or BLOCK
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    details = [{k: v for k, v in e.items() if k in ('loc', 'msg', 'type')} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={'error': {'message': 'Invalid request', 'status_code': 422, 'details': details}})
 
 
-class SimulateIn(BaseModel):
-    agent_id: str
-    goal: str = "buy weekly groceries under budget"
-    mode: str = "well_behaved"  # or "adversarial"
-    drift_type: AdversarialDriftType = "none"
-    # Bounded to match the frontend's own min=1/max=10 hint on the
-    # number input -- those HTML attributes don't actually stop invalid
-    # JS state from being sent (a typed "9999" bypasses them entirely),
-    # so the real boundary has to be here. An unbounded value previously
-    # let a client force PurchasingAgent to synchronously generate and
-    # evaluate an arbitrarily large batch in a single /simulate request.
-    num_transactions: int = Field(default=5, ge=1, le=10)
+@app.exception_handler(ConflictError)
+async def conflict(request, exc):
+    return JSONResponse(status_code=409, content={'error': {'message': str(exc), 'status_code': 409}})
 
 
-# ---------- Policy endpoints ----------
+@app.exception_handler(ValueError)
+async def value_error(request, exc):
+    return JSONResponse(status_code=422, content={'error': {'message': str(exc), 'status_code': 422}})
 
-@secured.post("/policies")
-def create_policy(policy_in: PolicyIn, db: Session = Depends(get_session)):
-    # Deactivate any existing active policies for this agent and compute
-    # the next version -- without this, two policies for the same agent
-    # could both end up active=True with the same version, making
-    # "get latest" genuinely ambiguous (found via a live multi-replica
-    # test: an update through one backend replica wasn't reliably visible
-    # from another, which looked like a cache bug but was actually this).
-    existing = db.query(PolicyRecord).filter_by(agent_id=policy_in.agent_id, active=True).all()
-    next_version = 1
-    for row in existing:
-        row.active = False
-        next_version = max(next_version, row.version + 1)
 
-    policy_id = f"pol_{uuid.uuid4().hex[:10]}"
-    policy = AgentPolicy(
-        policy_id=policy_id,
-        agent_id=policy_in.agent_id,
-        owner_human_id=policy_in.owner_human_id,
-        max_amount_per_txn=policy_in.max_amount_per_txn,
-        max_daily_total=policy_in.max_daily_total,
-        allowed_categories=policy_in.allowed_categories,
-        blocked_merchants=policy_in.blocked_merchants,
-        allowed_merchants=policy_in.allowed_merchants,
-        time_window=TimeWindow(policy_in.time_window_start, policy_in.time_window_end),
-        velocity=VelocityLimit(policy_in.velocity_max_count, policy_in.velocity_window_minutes),
-        version=next_version,
-    )
-    record = PolicyRecord(
-        policy_id=policy_id,
-        agent_id=policy_in.agent_id,
-        owner_human_id=policy_in.owner_human_id,
-        version=next_version,
-        active=True,
-        policy_json=policy.to_dict(),
-    )
-    db.add(record)
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request, exc):
+    logger.exception('Database error')
+    return JSONResponse(status_code=503, content={'error': {'message': 'Database temporarily unavailable', 'status_code': 503}})
+
+
+@app.exception_handler(Exception)
+async def internal_error(request, exc):
+    logger.exception('Unhandled request error')
+    return JSONResponse(status_code=500, content={'error': {'message': 'Internal server error', 'status_code': 500}})
+
+
+secured = APIRouter(dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
+
+
+class LoginIn(BaseModel):
+    credential: str = Field(min_length=1, max_length=512)
+
+
+@app.post('/auth/login', dependencies=[Depends(enforce_rate_limit)])
+def login(body: LoginIn, response: Response, request: Request, db: Session = Depends(get_session)):
+    allowed = os.environ.get('SENTINEL_ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+    if request.headers.get('Origin') not in allowed:
+        raise HTTPException(403, 'Invalid origin')
+    principal = authenticate(body.credential)
+    if principal.role == 'agent':
+        raise HTTPException(403, 'Agent credentials cannot create browser sessions')
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    db.query(BrowserSession).filter(BrowserSession.expires_at < now).delete()
+    db.add(BrowserSession(token_hash=digest(token), credential_hash=digest(body.credential), expires_at=now + timedelta(hours=8)))
     db.commit()
-    policy_cache.invalidate(f"policy:{policy_in.agent_id}")  # a new policy supersedes any cached one
-    return {"policy_id": policy_id, "policy": policy.to_dict()}
+    response.set_cookie('sentinel_session', token, httponly=True,
+        secure=os.environ.get('SENTINEL_ENV') == 'production', samesite='strict', max_age=28800)
+    return {'subject': principal.subject, 'role': principal.role, 'owner_id': principal.owner_id}
 
 
-@secured.get("/policies/{agent_id}")
-def get_latest_policy(agent_id: str, db: Session = Depends(get_session)):
-    cache_key = f"policy:{agent_id}"
-    cached = policy_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    record = (
-        db.query(PolicyRecord)
-        .filter_by(agent_id=agent_id, active=True)
-        .order_by(PolicyRecord.version.desc())
-        .first()
-    )
-    if not record:
-        raise HTTPException(404, "No active policy for this agent")
-    result = {"policy_id": record.policy_id, "policy": record.policy_json, "version": record.version}
-    policy_cache.set(cache_key, result)
-    return result
+@secured.get('/auth/me')
+def whoami(principal: Principal = Depends(require_api_key)):
+    return {'subject': principal.subject, 'role': principal.role, 'owner_id': principal.owner_id}
 
 
-@secured.get("/policies")
-def list_policies(db: Session = Depends(get_session)):
-    records = db.query(PolicyRecord).filter_by(active=True).all()
-    return [{"policy_id": r.policy_id, "agent_id": r.agent_id, "policy": r.policy_json} for r in records]
+@secured.post('/auth/logout')
+def logout(request: Request, response: Response, db: Session = Depends(get_session)):
+    db.query(BrowserSession).filter_by(token_hash=digest(request.cookies.get('sentinel_session', ''))).delete()
+    db.commit()
+    response.delete_cookie('sentinel_session')
+    return {'status': 'signed_out'}
 
 
-# ---------- Transaction feed ----------
+def load_policy(agent_id, db):
+    row = db.query(PolicyRecord).filter_by(agent_id=agent_id, active=True).order_by(PolicyRecord.version.desc()).first()
+    if not row:
+        raise HTTPException(404, 'No active policy for this agent')
+    return AgentPolicy.from_dict(row.policy_json)
+
+
+def scoped(query, principal, db):
+    if principal.role == 'admin':
+        return query
+    if principal.role == 'agent':
+        return query.filter(TransactionRecord.agent_id.in_(principal.agent_ids))
+    return query.filter(TransactionRecord.agent_id.in_(db.query(PolicyRecord.agent_id).filter_by(owner_human_id=principal.owner_id)))
+
+
+@secured.post('/policies')
+def create_policy(body: PolicyIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner')
+    if principal.role != 'admin' and body.owner_human_id != principal.owner_id:
+        raise HTTPException(403, 'Cannot assign another owner')
+    with agent_transaction(db, body.agent_id):
+        existing = db.query(PolicyRecord).filter_by(agent_id=body.agent_id).all()
+        if any(r.owner_human_id != body.owner_human_id for r in existing):
+            raise HTTPException(403, 'Agent ownership cannot be reassigned')
+        version = max((r.version for r in existing), default=0) + 1
+        for row in existing:
+            row.active = False
+        db.flush()
+        policy = AgentPolicy(policy_id=f'pol_{uuid.uuid4().hex}', agent_id=body.agent_id,
+            owner_human_id=body.owner_human_id, version=version, authorized_goal=body.authorized_goal,
+            max_amount_per_txn=body.max_amount_per_txn, max_daily_total=body.max_daily_total,
+            allowed_categories=body.allowed_categories, blocked_merchants=body.blocked_merchants,
+            allowed_merchants=body.allowed_merchants, time_window=TimeWindow(body.time_window_start, body.time_window_end),
+            velocity=VelocityLimit(body.velocity_max_count, body.velocity_window_minutes))
+        db.add(PolicyRecord(policy_id=policy.policy_id, agent_id=policy.agent_id,
+            owner_human_id=policy.owner_human_id, version=version, active=True, policy_json=policy.to_dict()))
+    return {'policy_id': policy.policy_id, 'policy': policy.to_dict()}
+
+
+@secured.get('/policies/{agent_id}')
+def get_latest_policy(agent_id: str, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    require_agent(principal, agent_id, db)
+    policy = load_policy(agent_id, db)
+    return {'policy_id': policy.policy_id, 'policy': policy.to_dict(), 'version': policy.version}
+
+
+@secured.get('/policies')
+def list_policies(db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    q = db.query(PolicyRecord).filter_by(active=True)
+    if principal.role == 'agent':
+        q = q.filter(PolicyRecord.agent_id.in_(principal.agent_ids))
+    elif principal.role != 'admin':
+        q = q.filter_by(owner_human_id=principal.owner_id)
+    return [{'policy_id': r.policy_id, 'agent_id': r.agent_id, 'policy': r.policy_json} for r in q.all()]
 
 def _serialize_transaction(tx: TransactionRecord) -> dict:
     decision = tx.decision  # populated via joinedload -- no extra query per row
@@ -253,7 +237,7 @@ def _serialize_transaction(tx: TransactionRecord) -> dict:
         "agent_id": tx.agent_id,
         "merchant_name": tx.merchant_name,
         "merchant_category": tx.merchant_category,
-        "amount": tx.amount,
+        "amount": float(tx.amount),
         "requested_at_iso": tx.requested_at_iso,
         "stated_intent": tx.stated_intent,
         "scenario_tag": tx.scenario_tag,
@@ -264,6 +248,9 @@ def _serialize_transaction(tx: TransactionRecord) -> dict:
         "razorpay_status": decision.razorpay_status if decision else None,
         "confidence": decision.confidence if decision else None,
         "model_version": decision.model_version if decision else None,
+        "risk_score": decision.risk_score if decision else None,
+        "policy_version": decision.policy_version if decision else None,
+        "llm_mode": decision.llm_mode if decision else None,
         "similar_past_cases": decision.similar_past_cases if decision else [],
         # Section 26 fix: requested_at_iso is the (often deterministic,
         # scenario-generated) event time the agent claims to have made
@@ -282,14 +269,15 @@ def _serialize_transaction(tx: TransactionRecord) -> dict:
 
 @secured.get("/transactions")
 def list_transactions(
-    limit: Optional[int] = None,
+    limit: Optional[int] = Query(default=None, ge=1, le=200),
     page: Optional[int] = Query(default=None, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
     agent_id: Optional[str] = None,
     verdict: Optional[str] = None,
-    search: Optional[str] = None,
+    search: Optional[str] = Query(default=None, max_length=200),
     scenario_tag: Optional[str] = None,
     db: Session = Depends(get_session),
+    principal: Principal = Depends(require_api_key),
 ):
     """Two modes, chosen by which params are passed:
 
@@ -302,7 +290,7 @@ def list_transactions(
     to avoid the N+1 (a separate decision lookup per transaction) the
     original implementation had.
     """
-    query = db.query(TransactionRecord).options(joinedload(TransactionRecord.decision))
+    query = scoped(db.query(TransactionRecord).options(joinedload(TransactionRecord.decision)), principal, db)
 
     # Golden-dataset evaluation runs persist their transactions (needed
     # so velocity-dependent golden cases have real history to score
@@ -318,7 +306,7 @@ def list_transactions(
     # would silently drop every row with no scenario_tag at all -- the
     # explicit OR keeps those rows.
     query = query.filter(
-        (TransactionRecord.scenario_tag.is_(None)) | (~TransactionRecord.scenario_tag.startswith("golden_"))
+        (TransactionRecord.scenario_tag.is_(None)) | (~TransactionRecord.scenario_tag.regexp_match(r'^(golden_|fuzz|loadtest|eval:)'))
     )
 
     if agent_id:
@@ -337,7 +325,7 @@ def list_transactions(
             DecisionRecord.verdict == verdict.upper()
         )
 
-    query = query.order_by(TransactionRecord.created_at.desc())
+    query = query.order_by(TransactionRecord.created_at.desc(), TransactionRecord.id.desc())
 
     if page is not None:
         page = max(page, 1)
@@ -356,14 +344,14 @@ def list_transactions(
 
 
 @secured.get("/transactions/scenarios")
-def list_scenario_tags(db: Session = Depends(get_session)):
+def list_scenario_tags(db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
     """Distinct scenario tags actually present, for building filter UI --
     without shipping every transaction row to the client just to
     dedupe a small set of tags client-side."""
     rows = (
-        db.query(TransactionRecord.scenario_tag)
+        scoped(db.query(TransactionRecord.scenario_tag), principal, db)
         .filter(TransactionRecord.scenario_tag.isnot(None), TransactionRecord.scenario_tag != "")
-        .filter(~TransactionRecord.scenario_tag.startswith("golden_"))  # never NULL here, filtered above
+        .filter(~TransactionRecord.scenario_tag.regexp_match(r'^(golden_|fuzz|loadtest|eval:)'))  # never NULL here, filtered above
         .distinct()
         .all()
     )
@@ -371,7 +359,7 @@ def list_scenario_tags(db: Session = Depends(get_session)):
 
 
 @secured.get("/transactions/summary")
-def transactions_summary(agent_id: Optional[str] = None, db: Session = Depends(get_session)):
+def transactions_summary(agent_id: Optional[str] = None, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
     from sqlalchemy import func
 
     # Same golden_* exclusion as /transactions -- the summary card
@@ -386,11 +374,12 @@ def transactions_summary(agent_id: Optional[str] = None, db: Session = Depends(g
         db.query(DecisionRecord.verdict, func.count(DecisionRecord.id))
         .join(TransactionRecord, TransactionRecord.request_id == DecisionRecord.request_id)
         .filter(
-            (TransactionRecord.scenario_tag.is_(None)) | (~TransactionRecord.scenario_tag.startswith("golden_"))
+            (TransactionRecord.scenario_tag.is_(None)) | (~TransactionRecord.scenario_tag.regexp_match(r'^(golden_|fuzz|loadtest|eval:)'))
         )
     )
     if agent_id:
         query = query.filter(TransactionRecord.agent_id == agent_id)
+    query = scoped(query, principal, db)
     rows = query.group_by(DecisionRecord.verdict).all()
     by_verdict = {"APPROVE": 0, "HOLD": 0, "BLOCK": 0}
     total = 0
@@ -401,253 +390,251 @@ def transactions_summary(agent_id: Optional[str] = None, db: Session = Depends(g
     return {"total": total, "by_verdict": by_verdict}
 
 
-# ---------- Evaluate + HITL ----------
 
-@secured.post("/transactions/evaluate")
-def evaluate_transaction(request_in: dict, db: Session = Depends(get_session)):
-    agent_id = request_in["agent_id"]
-    policy_record = (
-        db.query(PolicyRecord)
-        .filter_by(agent_id=agent_id, active=True)
-        .order_by(PolicyRecord.version.desc())
-        .first()
-    )
-    if not policy_record:
-        raise HTTPException(404, "No active policy for this agent")
-    policy = AgentPolicy.from_dict(policy_record.policy_json)
-
-    request_in.setdefault("request_id", f"req_{uuid.uuid4().hex[:10]}")
-    request = TransactionRequest(**request_in)
-
-    orchestrator = SentinelOrchestrator(db)
-    decision = orchestrator.evaluate_transaction(policy, request, scenario_tag=request_in.get("scenario_tag", ""))
-    return decision.__dict__
+@secured.post('/transactions/evaluate')
+def evaluate_transaction(body: TransactionIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner', 'agent')
+    require_agent(principal, body.agent_id, db)
+    policy = load_policy(body.agent_id, db)
+    # Replays retain server-assigned event time; client timestamps never overwrite it.
+    existing = db.query(TransactionRecord).filter_by(request_id=body.request_id).first()
+    request = body.domain(policy)
+    if existing:
+        request.requested_at_iso, request.requested_at_hour = existing.requested_at_iso, existing.requested_at_hour
+        request.raw_agent_goal = existing.raw_agent_goal
+    return SentinelOrchestrator(db).evaluate_transaction(policy, request, actor_id=principal.subject).__dict__
 
 
-@secured.post("/holds/{request_id}/resolve")
-def resolve_hold(request_id: str, body: HoldResolutionIn, db: Session = Depends(get_session)):
-    orchestrator = SentinelOrchestrator(db)
-    try:
-        result = orchestrator.resolve_hold(request_id, body.human_verdict)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return result
+@secured.post('/holds/{request_id}/resolve')
+def resolve_hold(request_id: str, body: HoldResolutionIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner', 'reviewer')
+    tx = db.query(TransactionRecord).filter_by(request_id=request_id).first()
+    if not tx:
+        raise HTTPException(404, 'Unknown request_id')
+    require_agent(principal, tx.agent_id, db)
+    return SentinelOrchestrator(db).resolve_hold(request_id, body.human_verdict,
+                                               reviewer_id=principal.subject, reason=body.reason)
 
 
-# ---------- Async batch evaluation (queue) ----------
-# Demonstrates real concurrent throughput: a burst of transaction requests
-# is enqueued immediately (the caller doesn't block on evaluation), and a
-# small worker pool processes them concurrently. Poll /jobs/{job_id} for
-# each result, or /jobs/batch/{batch_id} for the whole batch's status.
-
-class BatchEvaluateIn(BaseModel):
-    requests: list[dict]  # each dict matches the /transactions/evaluate body shape
-
-
-@secured.post("/transactions/evaluate-batch")
-async def evaluate_batch(body: BatchEvaluateIn):
-    if not body.requests:
-        raise HTTPException(400, "requests must contain at least one item")
-    batch_id = f"batch_{uuid.uuid4().hex[:10]}"
-    job_ids = []
-    for req in body.requests:
-        job_id = await eval_queue.enqueue(req, batch_id=batch_id)
-        job_ids.append(job_id)
-    return {"batch_id": batch_id, "job_ids": job_ids, "queued": len(job_ids)}
+@secured.post('/transactions/evaluate-batch')
+async def evaluate_batch(body: BatchEvaluateIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner', 'agent')
+    payloads = []
+    for item in body.requests:
+        require_agent(principal, item.agent_id, db)
+        payload = item.domain(load_policy(item.agent_id, db)).__dict__
+        payload['_submitted_by'] = principal.subject
+        payloads.append(payload)
+    batch_id = f'batch_{uuid.uuid4().hex}'
+    ids = await eval_queue.enqueue_batch(payloads, batch_id)
+    return {'batch_id': batch_id, 'job_ids': ids, 'queued': len(ids)}
 
 
-@secured.get("/jobs/{job_id}")
-def get_job_status(job_id: str):
-    job = eval_queue.get_job(job_id)
-    if job is None:
-        raise HTTPException(404, "Unknown job_id")
-    # Normalize across backends: the in-memory queue returns a Job
-    # dataclass (status is a JobStatus enum), the Redis queue returns a
-    # plain dict (status is already a string) -- both are valid, this
-    # endpoint's job is just to present them identically to the client.
-    if isinstance(job, dict):
-        return job
-    return {"job_id": job.job_id, "status": job.status.value, "result": job.result, "error": job.error}
+def check_job_scope(job, principal):
+    owner = job.get('submitted_by') if isinstance(job, dict) else getattr(job, 'submitted_by', None)
+    if principal.role != 'admin' and owner != principal.subject:
+        raise HTTPException(403, 'Job outside credential scope')
 
 
-@secured.get("/jobs/batch/{batch_id}")
-def get_batch_status(batch_id: str):
-    batch = eval_queue.get_batch(batch_id)
-    if batch is None:
-        raise HTTPException(404, "Unknown batch_id")
-    return batch
 
 
-@secured.get("/jobs")
-def queue_stats():
-    return eval_queue.stats()
 
 
-# ---------- Simulation trigger ----------
-
-@secured.post("/simulate")
-def simulate(body: SimulateIn, db: Session = Depends(get_session)):
-    policy_record = (
-        db.query(PolicyRecord)
-        .filter_by(agent_id=body.agent_id, active=True)
-        .order_by(PolicyRecord.version.desc())
-        .first()
-    )
-    if not policy_record:
-        raise HTTPException(404, "No active policy for this agent -- create one first")
-    policy = AgentPolicy.from_dict(policy_record.policy_json)
-
-    agent = PurchasingAgent()
-    requests = agent.run(
-        agent_id=body.agent_id,
-        goal=body.goal,
-        mode=body.mode,
-        drift_type=body.drift_type,
-        num_transactions=body.num_transactions,
-    )
-
-    orchestrator = SentinelOrchestrator(db)
-    scenario_tag = body.mode if body.mode == "well_behaved" else f"adversarial:{body.drift_type}"
-    decisions = []
-    for req in requests:
-        decision = orchestrator.evaluate_transaction(policy, req, scenario_tag=scenario_tag)
-        decisions.append({"request": req.__dict__, "decision": decision.__dict__})
-
-    return {"scenario_tag": scenario_tag, "results": decisions}
 
 
-@secured.post("/simulate-async")
-async def simulate_async(body: SimulateIn, db: Session = Depends(get_session)):
-    """Same as /simulate, but generates the agent's transaction requests
-    and enqueues each through the real async job queue instead of
-    evaluating them synchronously -- this is what actually exercises
-    the concurrent worker pool, visible to the dashboard as each job
-    moves QUEUED -> PROCESSING -> DONE."""
-    policy_record = (
-        db.query(PolicyRecord)
-        .filter_by(agent_id=body.agent_id, active=True)
-        .order_by(PolicyRecord.version.desc())
-        .first()
-    )
-    if not policy_record:
-        raise HTTPException(404, "No active policy for this agent -- create one first")
-
-    agent = PurchasingAgent()
-    requests = agent.run(
-        agent_id=body.agent_id,
-        goal=body.goal,
-        mode=body.mode,
-        drift_type=body.drift_type,
-        num_transactions=body.num_transactions,
-    )
-    scenario_tag = body.mode if body.mode == "well_behaved" else f"adversarial:{body.drift_type}"
-
-    batch_id = f"batch_{uuid.uuid4().hex[:10]}"
-    job_ids = []
-    for req in requests:
-        payload = dict(req.__dict__)
-        payload["scenario_tag"] = scenario_tag
-        job_id = await eval_queue.enqueue(payload, batch_id=batch_id)
-        job_ids.append(job_id)
-
-    return {"scenario_tag": scenario_tag, "batch_id": batch_id, "job_ids": job_ids}
+def scenario_requests(body, db, principal):
+    principal.require('admin', 'owner')
+    if os.environ.get('SENTINEL_ENV') == 'production':
+        raise HTTPException(403, 'Simulation is disabled in production')
+    require_agent(principal, body.agent_id, db)
+    policy = load_policy(body.agent_id, db)
+    requests = PurchasingAgent().run(body.agent_id, policy.authorized_goal, body.mode,
+                                     body.drift_type, body.num_transactions)
+    tag = 'well_behaved' if body.mode == 'well_behaved' else f'adversarial:{body.drift_type}'
+    return policy, requests, tag
 
 
-# ---------- Eval report ----------
+@secured.post('/simulate')
+def simulate(body: SimulateIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    policy, requests, tag = scenario_requests(body, db, principal)
+    return {'scenario_tag': tag, 'results': [{'request': r.__dict__,
+        'decision': SentinelOrchestrator(db).evaluate_transaction(policy, r, tag).__dict__} for r in requests]}
 
-@secured.get("/eval/report")
-def get_eval_report():
-    import json
-    import os
-    path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "eval_report.json")
-    path = os.path.abspath(path)
-    if not os.path.exists(path):
-        raise HTTPException(404, "No eval report yet -- run `python -m app.eval.eval_harness` first")
-    with open(path) as f:
-        report = json.load(f)
 
-    hard_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "hard_eval_report.json")
-    hard_path = os.path.abspath(hard_path)
-    if os.path.exists(hard_path):
-        with open(hard_path) as f:
-            report["hard_tier2"] = json.load(f)
+@secured.post('/simulate-async')
+async def simulate_async(body: SimulateIn, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    policy, requests, tag = scenario_requests(body, db, principal)
+    batch_id = f'batch_{uuid.uuid4().hex}'
+    payloads = [dict(r.__dict__, scenario_tag=tag, _submitted_by=principal.subject) for r in requests]
+    ids = await eval_queue.enqueue_batch(payloads, batch_id)
+    return {'batch_id': batch_id, 'job_ids': ids, 'scenario_tag': tag}
 
+
+@secured.get('/eval/report')
+def eval_report(principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner', 'reviewer')
+    from pathlib import Path
+    data = Path(__file__).resolve().parents[2] / 'data'
+    path = data / 'eval_report.json'
+    if not path.exists():
+        raise HTTPException(404, 'No evaluation report')
+    report = json.loads(path.read_text())
+    if (data / 'hard_eval_report.json').exists():
+        report['hard_tier2'] = json.loads((data / 'hard_eval_report.json').read_text())
     return report
 
 
-# ---------- AP2 (Agent Payments Protocol) compatibility ----------
-# See app/core/ap2_adapter.py for what this does and does not cover.
-# This lets an AP2-speaking caller (Intent Mandate + Cart Mandate) use
-# Sentinel as its authorization layer without knowing Sentinel's
-# internal schema -- concrete evidence of protocol compatibility, not
-# just a conceptual claim.
-
-class AP2EvaluateIn(BaseModel):
-    agent_id: str
-    owner_human_id: str
-    intent_mandate: dict
-    cart_mandate: dict
+@secured.post('/ap2/evaluate-mandate')
+def ap2_disabled(principal: Principal = Depends(require_api_key)):
+    # Approximate unsigned JSON cannot confer payment authority.
+    raise HTTPException(501, 'Authenticated AP2 integration is not implemented; use the scoped transaction API')
 
 
-@secured.post("/ap2/evaluate-mandate")
-def ap2_evaluate_mandate(body: AP2EvaluateIn, db: Session = Depends(get_session)):
-    from app.core.ap2_adapter import translate_mandates
-
-    translation = translate_mandates(
-        intent_mandate=body.intent_mandate,
-        cart_mandate=body.cart_mandate,
-        agent_id=body.agent_id,
-        owner_human_id=body.owner_human_id,
-    )
-
-    orchestrator = SentinelOrchestrator(db)
-    decision = orchestrator.evaluate_transaction(translation.policy, translation.request, scenario_tag="ap2")
-
-    return {
-        "decision": decision.__dict__,
-        "ap2_signature_verified": translation.signature_verified,
-        "warnings": translation.warnings,
-        "note": (
-            "A verdict of APPROVE here is what would inform generating an AP2 Payment Mandate "
-            "in a full integration. This endpoint translates mandate JSON shape only -- it does "
-            "not verify AP2's cryptographic signatures (W3C Verifiable Credentials); see "
-            "app/core/ap2_adapter.py for exactly what is and isn't covered."
-        ),
-    }
 
 
-@app.get("/health")
+
+
+@secured.get('/jobs')
+def queue_stats(principal: Principal = Depends(require_api_key)):
+    principal.require('admin')
+    return eval_queue.stats()
+
+
+def visible_job(job, principal):
+    if not isinstance(job, dict):
+        job = dict(job.__dict__, status=job.status.value)
+    if principal.role != 'admin' and job.get('submitted_by') != principal.subject:
+        raise HTTPException(403, 'Job outside credential scope')
+    return {k: v for k, v in job.items() if k not in ('submitted_by', 'completed_at')}
+
+
+@secured.get('/jobs/{job_id}')
+def job_status(job_id: str, principal: Principal = Depends(require_api_key)):
+    job = eval_queue.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, 'Unknown job_id')
+    return visible_job(job, principal)
+
+
+@secured.get('/jobs/batch/{batch_id}')
+def batch_status(batch_id: str, principal: Principal = Depends(require_api_key)):
+    batch = eval_queue.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(404, 'Unknown batch_id')
+    batch['jobs'] = [visible_job(job, principal) for job in batch['jobs']]
+    return batch
+
+
+
+@app.get('/health')
 def health():
-    """Actually checks dependencies rather than just returning 200 --
-    a health check that can't distinguish 'the process is up' from 'the
-    process can do its job' is worse than no health check, since a load
-    balancer or orchestrator will happily route traffic to a replica
-    that can't reach its database."""
-    instance_id = os.environ.get("SENTINEL_INSTANCE_ID", "unknown")
     checks = {}
-
+    db = SessionLocal()
     try:
-        from sqlalchemy import text
-        db = SessionLocal()
-        try:
-            db.execute(text("SELECT 1"))
-            checks["database"] = "ok"
-        finally:
-            db.close()
-    except Exception as e:
-        checks["database"] = f"unreachable: {e}"
-
+        db.execute(text('SELECT 1'))
+        checks['database'] = 'ok'
+    except Exception:
+        checks['database'] = 'unavailable'
+    finally:
+        db.close()
     try:
-        queue_stats = eval_queue.stats()
-        checks["queue"] = queue_stats.get("backend", "memory")
-    except Exception as e:
-        checks["queue"] = f"error: {e}"
+        stats = eval_queue.stats()
+        checks['queue'] = stats.get('backend', 'memory')
+        checks['workers'] = 'ok' if stats.get('live_workers', 0) > 0 else 'unavailable'
+    except Exception:
+        checks['queue'], checks['workers'] = 'unavailable', 'unavailable'
+    ok = checks.get('database') == 'ok' and checks.get('workers') == 'ok'
+    return JSONResponse(status_code=200 if ok else 503, content={'status': 'ok' if ok else 'degraded',
+        'instance_id': os.environ.get('SENTINEL_INSTANCE_ID', 'local'), 'checks': checks})
 
-    healthy = checks.get("database") == "ok"
-    body = {"status": "ok" if healthy else "degraded", "instance_id": instance_id, "checks": checks}
-    if not healthy:
-        return JSONResponse(status_code=503, content=body)
-    return body
+
+@app.post('/payments/{request_id}/reconcile', dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
+def reconcile_payment(request_id: str, body: dict, db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin')
+    payment = db.get(PaymentRecord, request_id)
+    if not payment:
+        raise HTTPException(404, 'No payment reservation')
+    result = SentinelOrchestrator(db).gateway.reconcile(str(body.get('order_id', '')), request_id, payment.amount_paise)
+    payment = db.query(PaymentRecord).filter_by(request_id=request_id).with_for_update().one()
+    if payment.state == 'captured' and result['status'] != 'captured':
+        raise HTTPException(409, 'Cannot downgrade captured state')
+    payment.state, payment.order_id = result['status'], result['order_id']
+    decision = db.query(DecisionRecord).filter_by(request_id=request_id).one()
+    decision.razorpay_status, decision.razorpay_ref = payment.state, payment.order_id
+    db.commit()
+    return result
+
+
+@app.get('/payments/reconciliation', dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
+def pending_reconciliation(db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin')
+    return [{'request_id': p.request_id, 'state': p.state, 'order_id': p.order_id}
+            for p in db.query(PaymentRecord).filter(PaymentRecord.state.in_(['unknown', 'processing'])).limit(200).all()]
+
+
+@app.post('/payments/webhook')
+async def provider_webhook(request: Request, db: Session = Depends(get_session)):
+    import hashlib
+    import hmac
+    from app.models.db import ProviderEvent
+    secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
+    raw = await request.body()
+    if len(raw) > 65536:
+        raise HTTPException(413, 'Webhook too large')
+    signature = request.headers.get('X-Razorpay-Signature', '')
+    if not secret or not hmac.compare_digest(hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), signature):
+        raise HTTPException(401, 'Invalid webhook signature')
+    event = json.loads(raw)
+    event_id = request.headers.get('X-Razorpay-Event-Id') or hashlib.sha256(raw).hexdigest()
+    entity = event.get('payload', {}).get('payment', {}).get('entity', {})
+    if event.get('event') != 'payment.captured':
+        return {'status': 'ignored'}
+    payment = db.query(PaymentRecord).filter_by(order_id=entity.get('order_id')).with_for_update().first()
+    if not payment or entity.get('amount') != payment.amount_paise or entity.get('currency') != 'INR':
+        raise HTTPException(409, 'Unknown order or mismatched amount')
+    if db.get(ProviderEvent, event_id):
+        return {'status': 'duplicate'}
+    payment.state = 'captured'
+    db.query(DecisionRecord).filter_by(request_id=payment.request_id).one().razorpay_status = 'captured'
+    db.add(ProviderEvent(event_id=event_id, payload_hash=hashlib.sha256(raw).hexdigest()))
+    db.commit()
+    return {'status': 'recorded'}
 
 
 app.include_router(secured)
+
+
+@app.get('/feedback/cases', dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
+def feedback_cases(db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin', 'owner', 'reviewer')
+    q = (db.query(DecisionRecord).join(TransactionRecord).options(joinedload(DecisionRecord.transaction))
+         .filter(DecisionRecord.human_override.isnot(None)))
+    q = scoped(q, principal, db)
+    rows = q.order_by(DecisionRecord.id.desc()).limit(200).all()
+    return [{'case_id': 'review_' + d.request_id, 'category': 'human_feedback',
+             'policy': d.policy_snapshot, 'request': {k: float(d.transaction.amount) if k == 'amount' else getattr(d.transaction,k)
+                 for k in TransactionRequest.__dataclass_fields__},
+             'history': [], 'policy_overrides': {}, 'expected_verdict': d.human_override,
+             'original_verdict':d.verdict, 'reviewer':d.resolved_by,
+             'notes':d.resolution_reason, 'is_judgment_call':True,
+             'requires_history_review':True} for d in rows]
+
+
+@app.get('/metrics', dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
+def metrics(db: Session = Depends(get_session), principal: Principal = Depends(require_api_key)):
+    principal.require('admin')
+    states = dict(db.query(PaymentRecord.state,func.count()).group_by(PaymentRecord.state).all())
+    decisions = (db.query(DecisionRecord).order_by(DecisionRecord.id.desc()).limit(1000).all())
+    def distribution(rows):
+        counts = {v:sum(d.verdict==v for d in rows) for v in ('APPROVE','HOLD','BLOCK')}
+        return {k:v/len(rows) if rows else 0 for k,v in counts.items()}
+    cut = min(500, len(decisions)//2)
+    recent,previous=distribution(decisions[:cut]),distribution(decisions[cut:cut*2])
+    distance=sum(abs(recent[k]-previous[k]) for k in recent)/2
+    tokens=sum((d.token_usage or {}).get('input_tokens',0) or 0 for d in decisions)
+    known_costs=[(d.token_usage or {}).get('cost_usd') for d in decisions if (d.token_usage or {}).get('cost_usd') is not None]
+    return {'payments':states,'queue':eval_queue.stats(),'review_backlog':db.query(DecisionRecord).filter_by(verdict='HOLD',human_override=None).count(),
+            'observed_input_tokens':tokens,'reported_cost_usd':sum(known_costs) if known_costs else None,
+            'distribution_monitor':{'samples_per_window':cut,'recent':recent,'previous':previous,
+                'total_variation':distance,'alert':cut>=20 and distance>.2,
+                'note':'Descriptive, uncalibrated signal; never changes payment authorization'}}

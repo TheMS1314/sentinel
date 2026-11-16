@@ -9,15 +9,15 @@
     },
     "amount_boundary": {
       "total": 40,
-      "approved": 6,
-      "held": 21,
+      "approved": 0,
+      "held": 27,
       "blocked": 13
     },
     "category_swap": {
       "total": 11,
       "approved": 0,
-      "held": 2,
-      "blocked": 9
+      "held": 0,
+      "blocked": 11
     },
     "combined_attack": {
       "total": 40,

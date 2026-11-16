@@ -64,6 +64,7 @@ class TestGroceryCategoryRegression:
             allowed_categories=["grocery"],
             time_window=TimeWindow(start_hour=6, end_hour=22),
             velocity=VelocityLimit(max_count=5, window_minutes=1440),
+            authorized_goal="buy groceries",
         )
         assert policy.allowed_categories == ["grocery"]
 
@@ -78,6 +79,7 @@ class TestGroceryCategoryRegression:
             allowed_categories=["grocery"],
             time_window=TimeWindow(start_hour=6, end_hour=22),
             velocity=VelocityLimit(max_count=5, window_minutes=1440),
+            authorized_goal="buy groceries",
         )
         orchestrator = SentinelOrchestrator(db)
 

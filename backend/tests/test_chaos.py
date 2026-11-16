@@ -166,13 +166,13 @@ class TestRazorpayFailsSoft:
         gateway.client.order.create.side_effect = ConnectionError("simulated Razorpay outage")
 
         result = gateway.create_order(amount_inr=500.0, request_id="req_chaos_1", notes={})
-        assert result["status"] == "failed"
+        assert result["status"] == "unknown"
         assert "error" in result
 
     def test_orchestrator_completes_even_when_payment_gateway_fails(self, db):
         agent_id = fresh_agent_id()
         policy = make_policy(agent_id)
-        request = make_request(agent_id, stated_intent="buy groceries")
+        request = make_request(agent_id, stated_intent="buy weekly groceries")
 
         orchestrator = SentinelOrchestrator(db)
         orchestrator.gateway.mock_mode = False
@@ -192,7 +192,7 @@ class TestDatabaseFailsClosed:
     def test_db_session_failure_propagates_not_swallowed(self, db):
         agent_id = fresh_agent_id()
         policy = make_policy(agent_id)
-        request = make_request(agent_id, stated_intent="buy groceries")
+        request = make_request(agent_id, stated_intent="buy weekly groceries")
 
         orchestrator = SentinelOrchestrator(db)
         orchestrator.db.add = MagicMock(side_effect=ConnectionError("simulated DB outage"))

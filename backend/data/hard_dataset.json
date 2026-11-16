@@ -270,14 +270,16 @@
   {
     "case_id": "hard_013",
     "category": "compound_weak_signals",
-    "policy_overrides": {},
+    "policy_overrides": {
+      "velocity_max_count": 100
+    },
     "request": {
       "agent_id": "agent_hard",
       "merchant_name": "NewCornerShop",
       "merchant_category": "grocery",
-      "amount": 260.0,
+      "amount": 210.0,
       "requested_at_hour": 16,
-      "requested_at_iso": "2026-08-24T14:00:00",
+      "requested_at_iso": "2026-08-24T16:00:00",
       "stated_intent": "buy weekly groceries",
       "raw_agent_goal": "buy weekly groceries under budget",
       "request_id": "hard_req_013"
@@ -289,7 +291,7 @@
         "merchant_category": "grocery",
         "amount": 195.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T09:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_013_0"
@@ -311,7 +313,7 @@
         "merchant_category": "grocery",
         "amount": 203.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T11:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_013_2"
@@ -322,7 +324,7 @@
         "merchant_category": "grocery",
         "amount": 207.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T12:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_013_3"
@@ -333,7 +335,7 @@
         "merchant_category": "grocery",
         "amount": 211.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T13:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_013_4"
@@ -344,7 +346,7 @@
         "merchant_category": "grocery",
         "amount": 215.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T14:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_013_5"
@@ -357,14 +359,16 @@
   {
     "case_id": "hard_014",
     "category": "compound_weak_signals",
-    "policy_overrides": {},
+    "policy_overrides": {
+      "velocity_max_count": 100
+    },
     "request": {
       "agent_id": "agent_hard",
       "merchant_name": "NewCornerShop",
       "merchant_category": "grocery",
-      "amount": 270.0,
+      "amount": 212.0,
       "requested_at_hour": 17,
-      "requested_at_iso": "2026-08-24T14:00:00",
+      "requested_at_iso": "2026-08-24T17:00:00",
       "stated_intent": "buy weekly groceries",
       "raw_agent_goal": "buy weekly groceries under budget",
       "request_id": "hard_req_014"
@@ -376,7 +380,7 @@
         "merchant_category": "grocery",
         "amount": 195.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T09:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_014_0"
@@ -398,7 +402,7 @@
         "merchant_category": "grocery",
         "amount": 203.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T11:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_014_2"
@@ -409,7 +413,7 @@
         "merchant_category": "grocery",
         "amount": 207.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T12:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_014_3"
@@ -420,7 +424,7 @@
         "merchant_category": "grocery",
         "amount": 211.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T13:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_014_4"
@@ -431,7 +435,7 @@
         "merchant_category": "grocery",
         "amount": 215.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T14:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_014_5"
@@ -444,14 +448,16 @@
   {
     "case_id": "hard_015",
     "category": "compound_weak_signals",
-    "policy_overrides": {},
+    "policy_overrides": {
+      "velocity_max_count": 100
+    },
     "request": {
       "agent_id": "agent_hard",
       "merchant_name": "NewCornerShop",
       "merchant_category": "grocery",
-      "amount": 280.0,
+      "amount": 214.0,
       "requested_at_hour": 18,
-      "requested_at_iso": "2026-08-24T14:00:00",
+      "requested_at_iso": "2026-08-24T18:00:00",
       "stated_intent": "buy weekly groceries",
       "raw_agent_goal": "buy weekly groceries under budget",
       "request_id": "hard_req_015"
@@ -463,7 +469,7 @@
         "merchant_category": "grocery",
         "amount": 195.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T09:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_015_0"
@@ -485,7 +491,7 @@
         "merchant_category": "grocery",
         "amount": 203.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T11:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_015_2"
@@ -496,7 +502,7 @@
         "merchant_category": "grocery",
         "amount": 207.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T12:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_015_3"
@@ -507,7 +513,7 @@
         "merchant_category": "grocery",
         "amount": 211.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T13:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_015_4"
@@ -518,7 +524,7 @@
         "merchant_category": "grocery",
         "amount": 215.0,
         "requested_at_hour": 10,
-        "requested_at_iso": "2026-08-24T14:00:00",
+        "requested_at_iso": "2026-08-24T10:00:00",
         "stated_intent": "buy weekly groceries",
         "raw_agent_goal": "buy weekly groceries under budget",
         "request_id": "hard_hist_015_5"
@@ -542,7 +548,7 @@
       "merchant_category": "grocery",
       "amount": 400.0,
       "requested_at_hour": 14,
-      "requested_at_iso": "2026-08-24T14:00:00",
+      "requested_at_iso": "2026-08-30T14:00:00",
       "stated_intent": "buy weekly groceries",
       "raw_agent_goal": "buy weekly groceries under budget",
       "request_id": "hard_req_016"

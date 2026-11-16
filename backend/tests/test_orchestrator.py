@@ -101,7 +101,7 @@ class TestEscalationPath:
         assert decision.verdict == VERDICT_HOLD
         assert decision.decided_by == "llm_reasoner"
 
-    def test_prompt_injection_pattern_blocked_by_reasoner(self, orchestrator):
+    def test_prompt_injection_pattern_blocked_before_reasoner(self, orchestrator):
         agent_id = fresh_agent_id()
         policy = make_policy(agent_id, allowed_categories=["grocery", "gift_cards"])
         request = make_request(
@@ -112,7 +112,7 @@ class TestEscalationPath:
         )
         decision = orchestrator.evaluate_transaction(policy, request)
         assert decision.verdict == VERDICT_BLOCK
-        assert decision.decided_by == "llm_reasoner"
+        assert decision.decided_by == "rule_engine"
 
     def test_repeated_escalations_populate_and_use_rag_retrieval(self, orchestrator):
         """Regression test: this is the exact scenario that surfaced a

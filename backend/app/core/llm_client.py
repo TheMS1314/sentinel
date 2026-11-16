@@ -38,7 +38,7 @@ class LLMClient:
                 self.mock_mode = True
             else:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=key)
+                self._client = anthropic.Anthropic(api_key=key, timeout=15.0, max_retries=0)
 
         elif self.provider == "openrouter":
             key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -49,7 +49,7 @@ class LLMClient:
                 from openai import OpenAI
                 self._client = OpenAI(
                     base_url="https://openrouter.ai/api/v1",
-                    api_key=key,
+                    api_key=key, timeout=15.0, max_retries=0,
                 )
         else:
             raise ValueError(f"Unknown LLM_PROVIDER: {self.provider}")
@@ -70,7 +70,7 @@ class LLMClient:
         """
         if self.mock_mode:
             logger.info("[MOCK LLM] Returning canned response instead of a real API call.")
-            return mock_response
+            return dict(mock_response, _usage={"mode": "mock", "input_tokens": 0, "output_tokens": 0, "cost_usd": None})
 
         max_attempts = 2
 
@@ -151,6 +151,19 @@ class LLMClient:
                 result = self._safe_parse_json(text)
 
                 if "error" not in result and "verdict" in result:
+                    from pydantic import BaseModel, ConfigDict, Field, ValidationError
+                    from typing import Literal
+                    class Output(BaseModel):
+                        model_config = ConfigDict(extra='forbid')
+                        verdict: Literal['APPROVE', 'HOLD', 'BLOCK']
+                        reasoning: str = Field(min_length=1, max_length=4000)
+                        confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+                    result = Output.model_validate(result).model_dump()
+                    usage = getattr(resp, 'usage', None)
+                    result['_usage'] = {'mode': 'live', 'attempts': attempt,
+                        'input_tokens': getattr(usage, 'prompt_tokens', getattr(usage, 'input_tokens', None)),
+                        'output_tokens': getattr(usage, 'completion_tokens', getattr(usage, 'output_tokens', None)),
+                        'cost_usd': getattr(usage, 'cost', None)}
                     return result
 
                 raise RuntimeError("LLM response contained invalid JSON")

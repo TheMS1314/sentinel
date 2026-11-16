@@ -66,6 +66,7 @@ class AgentPolicy:
     # Behavior
     active: bool = True
     version: int = 1
+    authorized_goal: str = 'buy weekly groceries under budget'
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -118,6 +119,13 @@ class Decision:
                                           # which model version is behind any given past
                                           # decision after a model swap, which "just log the
                                           # provider name" doesn't give you
+    risk_score: Optional[float] = None
+    policy_id: Optional[str] = None
+    policy_version: Optional[int] = None
+    prompt_version: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    llm_mode: Optional[str] = None
+    token_usage: Optional[dict] = None
 
 
 @dataclass
@@ -131,8 +139,23 @@ class HistoryItem:
     request: TransactionRequest
     verdict: str
     human_override: Optional[str] = None
+    payment_status: Optional[str] = None
+    budget_day: Optional[str] = None
+
+    @property
+    def is_approved_behavior(self) -> bool:
+        if self.payment_status is None:
+            return self.verdict == VERDICT_APPROVE or self.human_override == VERDICT_APPROVE
+        return self.payment_status in ('created', 'mock', 'captured')
+
+    @property
+    def counts_against_budget(self) -> bool:
+        return self.counts_as_spent or self.payment_status in ('reserved', 'pending', 'processing', 'unknown', 'created', 'mock')
 
     @property
     def counts_as_spent(self) -> bool:
         """True only if this transaction actually resulted in money moving."""
+        if self.payment_status is not None:
+            return self.payment_status == 'captured'
+        # Compatibility for pure rule-engine fixtures with no payment ledger.
         return self.verdict == VERDICT_APPROVE or self.human_override == VERDICT_APPROVE

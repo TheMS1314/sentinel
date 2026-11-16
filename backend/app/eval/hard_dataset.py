@@ -68,6 +68,11 @@ def _req(i: int, **overrides) -> dict:
     r = dict(BASE_REQUEST)
     r["request_id"] = f"hard_req_{i:03d}"
     r.update(overrides)
+    from datetime import datetime
+    if 'requested_at_iso' in overrides and 'requested_at_hour' not in overrides:
+        r['requested_at_hour'] = datetime.fromisoformat(r['requested_at_iso']).hour
+    else:
+        r['requested_at_iso'] = datetime.fromisoformat(r['requested_at_iso']).replace(hour=r['requested_at_hour']).isoformat()
     return r
 
 
@@ -127,8 +132,8 @@ def build_dataset() -> list:
         ]
         cases.append(HardCase(
             case_id=f"hard_{i:03d}", category="compound_weak_signals",
-            policy_overrides={},
-            request=_req(i, amount=260.0 + j * 10, requested_at_hour=16 + j, merchant_name="NewCornerShop"),
+            policy_overrides={"velocity_max_count": 100},
+            request=_req(i, amount=210.0 + j * 2, requested_at_hour=16 + j, merchant_name="NewCornerShop"),
             history=history,
             expected_verdict="HOLD",
             notes="No single signal (amount/timing/merchant) is extreme alone -- tests whether the "
@@ -154,7 +159,7 @@ def build_dataset() -> list:
         # case is specifically about the BEHAVIORAL baseline, not the other
         # two checks, so both are deliberately loosened to isolate it.
         policy_overrides={"velocity_max_count": 50, "velocity_window_minutes": 60, "max_daily_total": 50000.0},
-        request=_req(i, amount=400.0, requested_at_hour=14),
+        request=_req(i, amount=400.0, requested_at_hour=14, requested_at_iso="2026-08-30T14:00:00"),
         history=history,
         expected_verdict="APPROVE",
         is_judgment_call=True,

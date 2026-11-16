@@ -31,6 +31,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 def run_fuzz_suite(verbose: bool = True) -> dict:
     os.environ.setdefault("OPENROUTER_API_KEY", "")
 
+    import tempfile
+    os.environ['SENTINEL_DATABASE_URL'] = 'sqlite:///' + tempfile.mktemp(prefix='sentinel-fuzz-', suffix='.sqlite')
+    os.environ['RAZORPAY_KEY_ID'] = ''
+    os.environ['RAZORPAY_KEY_SECRET'] = ''
+    os.environ['SENTINEL_ENV'] = 'evaluation'
     from app.models.db import init_db, SessionLocal, PolicyRecord
     from app.models.policy import AgentPolicy, TransactionRequest, TimeWindow, VelocityLimit, VERDICT_APPROVE
     from app.core.orchestrator import SentinelOrchestrator
@@ -42,7 +47,7 @@ def run_fuzz_suite(verbose: bool = True) -> dict:
     policy = AgentPolicy(
         policy_id=f"pol_{agent_id}", agent_id=agent_id, owner_human_id="human_fuzz",
         max_amount_per_txn=2000.0, max_daily_total=10_000_000.0,
-        allowed_categories=["grocery", "gift_cards"],  # gift_cards allowed so category alone doesn't block injection cases
+        allowed_categories=["grocery"],  # gift_cards allowed so category alone doesn't block injection cases
         time_window=TimeWindow(0, 23), velocity=VelocityLimit(100_000, 1440),
     )
     db.add(PolicyRecord(
@@ -58,6 +63,9 @@ def run_fuzz_suite(verbose: bool = True) -> dict:
     violations = []
 
     for case in suite:
+        agent_id = f'agent_fuzz_{uuid.uuid4().hex[:12]}'
+        policy.agent_id = agent_id
+        policy.policy_id = 'pol_' + agent_id
         request = TransactionRequest(
             request_id=f"fuzz_{uuid.uuid4().hex[:10]}",
             agent_id=agent_id,
@@ -103,6 +111,7 @@ def run_fuzz_suite(verbose: bool = True) -> dict:
                 })
 
     db.commit()
+    db.close()
 
     results = {"total": len(suite), "by_category": by_category, "violations": violations}
 

@@ -37,7 +37,7 @@ def print_db_diagnostic():
     db_name = engine.url.database or "?"
     host = engine.url.host
     location = f"{host}/{db_name}" if host else db_name
-    queue_backend = "redis" if os.environ.get("SENTINEL_REDIS_URL") else "in-process"
+    queue_backend = os.environ.get("QUEUE_BACKEND", "memory")
     print(f"Database: {dialect_name} / {location}")
     print(f"Environment: {os.environ.get('SENTINEL_ENV', 'development')}")
     print(f"Queue: {queue_backend}")
@@ -178,6 +178,12 @@ def validate_seed(db) -> list[str]:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--confirm-reset', action='store_true')
+    args = parser.parse_args()
+    if os.environ.get('SENTINEL_ENV') == 'production' or not args.confirm_reset:
+        raise SystemExit('Demo reset requires --confirm-reset and a non-production environment')
     wipe_and_recreate()
     print_db_diagnostic()
     db = SessionLocal()

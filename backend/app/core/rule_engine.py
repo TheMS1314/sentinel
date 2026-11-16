@@ -21,7 +21,9 @@ when a human should confirm before anything happens.
 """
 
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import timedelta
+import re
+from app.core.validation import paise, utc_timestamp
 from dataclasses import dataclass
 
 from app.models.policy import (
@@ -66,7 +68,7 @@ class RuleEngine:
 
         # --- 1. Per-transaction amount cap ---
         checked.append("max_amount_per_txn")
-        if request.amount > policy.max_amount_per_txn:
+        if paise(request.amount) > paise(policy.max_amount_per_txn):
             reasons.append(
                 f"Amount ₹{request.amount:.2f} exceeds per-transaction cap "
                 f"of ₹{policy.max_amount_per_txn:.2f}."
@@ -78,18 +80,15 @@ class RuleEngine:
         # HOLD later approved by a human) -- a blocked or still-pending
         # attempt never spent anything and must not count against the cap.
         checked.append("max_daily_total")
-        today_total = sum(
-            item.request.amount for item in recent_history
-            if item.counts_as_spent and item.request.requested_at_iso[:10] == request.requested_at_iso[:10]
+        today_total_paise = sum(
+            paise(item.request.amount) for item in recent_history
+            if item.counts_against_budget and (item.budget_day or utc_timestamp(item.request.requested_at_iso).date().isoformat()) == utc_timestamp(request.requested_at_iso).date().isoformat()
         )
-        projected_total = today_total + request.amount
-        if projected_total > policy.max_daily_total:
-            reasons.append(
-                f"Projected daily total ₹{projected_total:.2f} would exceed "
-                f"daily cap of ₹{policy.max_daily_total:.2f} "
-                f"(already spent ₹{today_total:.2f} today)."
-            )
-            return RuleEngineResult(VERDICT_BLOCK, reasons, checked)
+        projected_total = today_total_paise + paise(request.amount)
+        if projected_total > paise(policy.max_daily_total):
+            return RuleEngineResult(VERDICT_BLOCK, [
+                f'Projected daily total ₹{projected_total / 100:.2f} exceeds daily cap '
+                f'₹{policy.max_daily_total:.2f} (reserved/captured ₹{today_total_paise / 100:.2f}).'], checked)
 
         # --- 3. Merchant allowlist (strict mode, if configured) ---
         # Normalized comparison (case-fold + strip whitespace) -- an exact
@@ -150,12 +149,12 @@ class RuleEngine:
         # some of those attempts were blocked. This is intentionally
         # different from the daily-total check above.
         checked.append("velocity_limit")
-        window_start = datetime.fromisoformat(request.requested_at_iso) - timedelta(
+        window_start = utc_timestamp(request.requested_at_iso) - timedelta(
             minutes=policy.velocity.window_minutes
         )
         recent_count = sum(
             1 for item in recent_history
-            if datetime.fromisoformat(item.request.requested_at_iso) >= window_start
+            if window_start <= utc_timestamp(item.request.requested_at_iso) <= utc_timestamp(request.requested_at_iso)
         )
         if recent_count + 1 > policy.velocity.max_count:
             reasons.append(
@@ -179,35 +178,23 @@ class RuleEngine:
         # semantic work. This is just a trigger, not a judgment.
         checked.append("intent_drift_heuristic")
 
-        STOPWORDS = {
-            "a", "an", "the", "buy", "purchase", "get", "acquire", "and", "or",
-            "for", "to", "of", "on", "in", "at", "with", "under", "budget",
-            "weekly", "monthly", "daily", "please", "now",
-        }
-
-        OVERRIDE_PATTERNS = (
-            "ignore previous", "ignore prior", "ignore all previous",
-            "disregard previous", "disregard prior", "new instructions",
-            "forget previous", "override", "system prompt",
-        )
-
-        if request.raw_agent_goal:
-            intent_lower = request.stated_intent.lower()
-            override_detected = any(p in intent_lower for p in OVERRIDE_PATTERNS)
-
-            goal_words = set(request.raw_agent_goal.lower().split()) - STOPWORDS
-            intent_words = set(intent_lower.split()) - STOPWORDS
-            overlap = goal_words & intent_words
-
-            if override_detected or not overlap:
-                reason = (
-                    "Stated intent contains an instruction-override pattern."
-                    if override_detected else
-                    "Stated intent shares no meaningful keywords with the "
-                    "agent's original authorized goal -- needs semantic review."
-                )
-                reasons.append(reason)
-                return RuleEngineResult(ESCALATE, reasons, checked)
+        override_patterns = ('ignore previous', 'ignore prior', 'ignore all previous',
+            'disregard previous', 'disregard prior', 'new instructions', 'forget previous',
+            'override', 'system prompt', 'spend freely')
+        intent = request.stated_intent.casefold()
+        if any(pattern in intent for pattern in override_patterns):
+            return RuleEngineResult(VERDICT_BLOCK,
+                ['Explicit instruction override violates the authorized goal.'], checked)
+        if not request.raw_agent_goal.strip():
+            return RuleEngineResult(VERDICT_HOLD, ['No trusted authorized goal is available.'], checked)
+        # Only a canonical restatement of the goal is a deterministic fast path.
+        # A shared word is insufficient; any added purpose reaches semantic review.
+        def canonical(text):
+            text = re.sub(r'\bunder budget\b', '', text.casefold())
+            text = re.sub(r'\b(buy|purchase|get|please)\b', '', text)
+            return ' '.join(re.findall(r'\w+', text))
+        if canonical(intent) != canonical(request.raw_agent_goal) or not canonical(intent):
+            return RuleEngineResult(ESCALATE, ['Intent differs from the authorized goal; semantic review required.'], checked)
 
         # --- All deterministic checks passed cleanly ---
         reasons.append("All deterministic policy checks passed.")

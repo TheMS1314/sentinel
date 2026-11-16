@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.core.behavioral_baseline import BehavioralBaseline, MIN_HISTORY_FOR_BASELINE
+from app.core.behavioral_baseline import BehavioralBaseline, MIN_HISTORY_FOR_BASELINE, circular_hour_distance
 
 FLAG_THRESHOLD = 30
 
@@ -68,7 +68,7 @@ class RiskScorer:
         self.behavioral = behavioral_baseline or BehavioralBaseline()
 
     def evaluate(self, history_items: list, request) -> RiskScore:
-        approved_items = [item for item in history_items if item.counts_as_spent]
+        approved_items = [item for item in history_items if item.is_approved_behavior]
 
         if len(approved_items) < MIN_HISTORY_FOR_BASELINE:
             return RiskScore(total=0, max_total=100, components=[], is_high_risk=False, insufficient_history=True)
@@ -86,16 +86,14 @@ class RiskScorer:
             explanation=(
                 f"amount is {abs(flag.amount_zscore):.1f}sigma from this agent's typical spend"
                 if flag.amount_zscore is not None
-                else "amount matches this agent's typical spend"
+                else ("amount differs from a zero-variance baseline" if amount_points else "amount matches this agent's typical spend")
             ),
         ))
 
         timing_points = 0.0
         if flag.typical_hour_range is not None:
-            lo, hi = flag.typical_hour_range
-            if request.requested_at_hour < lo or request.requested_at_hour > hi:
-                distance = min(abs(request.requested_at_hour - lo), abs(request.requested_at_hour - hi))
-                timing_points = min(TIMING_WEIGHT, distance * 4)
+            distance = circular_hour_distance([i.request.requested_at_hour for i in approved_items], request.requested_at_hour)
+            timing_points = min(TIMING_WEIGHT, distance * 4)
         components.append(RiskComponent(
             name="timing_deviation", points=round(timing_points, 1), max_points=TIMING_WEIGHT,
             explanation=(
@@ -105,8 +103,8 @@ class RiskScorer:
             ),
         ))
 
-        known_merchants = {item.request.merchant_name for item in approved_items}
-        merchant_points = 0.0 if request.merchant_name in known_merchants else MERCHANT_WEIGHT
+        known_merchants = {item.request.merchant_name.strip().casefold() for item in approved_items}
+        merchant_points = 0.0 if request.merchant_name.strip().casefold() in known_merchants else MERCHANT_WEIGHT
         components.append(RiskComponent(
             name="merchant_familiarity", points=merchant_points, max_points=MERCHANT_WEIGHT,
             explanation=(

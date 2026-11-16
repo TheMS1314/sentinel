@@ -28,7 +28,7 @@ os.environ.setdefault("SENTINEL_RATE_LIMIT_REQUESTS", "5000")
 os.environ.setdefault("SENTINEL_RATE_LIMIT_WINDOW_SECONDS", "60")
 
 from app.api.main import app  # noqa: E402
-from app.models.db import Base, engine, SessionLocal, PolicyRecord, TransactionRecord, DecisionRecord  # noqa: E402
+from app.models.db import Base, engine, SessionLocal, PolicyRecord, TransactionRecord, DecisionRecord, PaymentRecord, ReviewEvent  # noqa: E402
 
 HEADERS = {"X-API-Key": "test-key-contracts"}
 
@@ -38,6 +38,8 @@ def clean_db():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        db.query(ReviewEvent).delete()
+        db.query(PaymentRecord).delete()
         db.query(DecisionRecord).delete()
         db.query(TransactionRecord).delete()
         db.query(PolicyRecord).delete()
@@ -361,7 +363,7 @@ class TestBatchJobs:
 
     def test_empty_batch_rejected(self, client):
         resp = client.post("/transactions/evaluate-batch", json={"requests": []}, headers=HEADERS)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "error" in resp.json()
 
     def test_unknown_batch_returns_404_envelope(self, client):
