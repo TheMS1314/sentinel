@@ -6,7 +6,6 @@ The key design idea is simple:
 
 > **An AI agent may be autonomous, but its payment authority should remain bounded, explainable, and auditable.**
 
-Sentinel is built for the Razorpay AI Builder Buildathon, Track 1: AI Growth & Agentic Commerce.
 
 ---
 
