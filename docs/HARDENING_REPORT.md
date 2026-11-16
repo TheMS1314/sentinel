@@ -49,8 +49,8 @@ This branch replaces several prototype assumptions with explicit authority, acco
 
 ## Executed verification
 
-- Backend CI: **147 tests passed** on Ubuntu/Python 3.12 with PostgreSQL 16 and Redis 7, including fresh and legacy Alembic upgrades, pending-entry recovery, atomic queue capacity, concurrent allowance/dispatch tests, HTTP access/session/CSRF tests, signed webhook handling and idempotency. [Successful run](https://github.com/TheMS1314/sentinel/actions/runs/43938151453) at commit `b3b7a52`. The earlier complete local suite passed 144 tests before the additional migration cases; local migration checks subsequently passed with the PostgreSQL variants skipped because no local server is available.
-- Frontend: **4 tests passed**, both locally and in GitHub CI; lint clean; production build passed; CI npm audit passed.
+- Backend CI: **175 tests passed** on Ubuntu/Python 3.12 with PostgreSQL 16 and Redis 7, including fresh and legacy Alembic upgrades, pending-entry recovery, atomic queue capacity, concurrent allowance/dispatch tests, HTTP access/session/CSRF tests, signed webhook handling and idempotency. [Successful run](https://github.com/TheMS1314/sentinel/actions/runs/43947067184) at commit `fe0c2f2`. The complete local suite passed 172 tests, with three PostgreSQL migration variants skipped because no local server is available. Those three variants passed in CI.
+- Frontend: **8 tests passed**, both locally and in GitHub CI; lint clean; production build passed; CI npm audit passed.
 - Runtime dependency audit: **no known vulnerabilities found** in the 47 pinned Python runtime packages at audit time. Frontend npm audit: **zero vulnerabilities**. This is a time-specific advisory check, not a security guarantee.
 - Golden benchmark: **89/89**, synthetic prevalence: **500/500**, hard benchmark: **14/16**. These refreshed runs use mock reasoning; the hard misses are conservative holds where constructed labels expect approval. Safety counts and runtime/dataset fingerprints are saved.
 - Fuzzing: **187 variants, zero selected invariant violations** with isolated contexts.
@@ -62,7 +62,7 @@ This branch replaces several prototype assumptions with explicit authority, acco
 
 ## Risk intelligence follow-up
 
-The branch additionally implements local threat evidence, owner-scoped vendor profiles, bounded merchant correlation and a separate emergency dispatch gate. These are Sentinel controls inspired by the named product categories, not commercial integrations. See [the design and boundaries](RISK_INTELLIGENCE.md). Added tests cover source/identity/owner boundaries, evidence expiry, review restrictions, changes after approval, replay, global concurrent dispatch limits, exact amounts, control audit/version conflicts and the administrator UI. New migrations are checked from fresh, legacy and already-hardened databases. PostgreSQL validation of this follow-up is recorded after CI completes.
+The branch additionally implements local threat evidence, owner-scoped vendor profiles, bounded merchant correlation and a separate emergency dispatch gate. These are Sentinel controls inspired by the named product categories, not commercial integrations. See [the design and boundaries](RISK_INTELLIGENCE.md). Added tests cover source/identity/owner boundaries, evidence expiry, review restrictions, changes after approval, replay, global concurrent dispatch limits, exact amounts, control audit/version conflicts and the administrator UI. New migrations are checked from fresh, legacy and already-hardened databases. PostgreSQL/Redis CI passed all 175 backend tests, including the 28 added intelligence/upgrade cases, and frontend CI passed all eight tests, lint, build and npm audit. The 89-case mock golden benchmark was rerun successfully. [Follow-up run](https://github.com/TheMS1314/sentinel/actions/runs/43947067184).
 
 ## Important remaining boundaries
 

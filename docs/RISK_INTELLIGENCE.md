@@ -75,6 +75,10 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 }
 ```
 
+## Executed verification
+
+[GitHub CI](https://github.com/TheMS1314/sentinel/actions/runs/43947067184) passed **175 backend tests** with PostgreSQL 16 and Redis 7 and **eight frontend tests**, lint, build and npm audit. Coverage includes expiry/identity/source/owner boundaries, freezes after approval, new threats after approval, human review, replay, concurrent cross-agent count limits, exact rolling amounts, failed-attempt accounting, control audit/version conflicts, and fresh/legacy/already-hardened upgrades. Local tests passed 172 cases with three PostgreSQL-only variants skipped; all three passed in CI. The mock golden set remains 89/89. Real provider integrations and full container deployment remain untested.
+
 ## Commercial integration path
 
 Recorded Future documents API token authentication with data/endpoint entitlements determined by licensed modules. RiskRecon documents separately subscribed API access. Mastercard Decision Intelligence and Safety Net require their respective product onboarding and an appropriate payment-system role; this project does not possess a Mastercard network vantage point.
