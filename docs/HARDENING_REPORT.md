@@ -47,18 +47,18 @@ This branch replaces several prototype assumptions with explicit authority, acco
 | Possible accidental live gateway use | Non-test Razorpay keys rejected |
 | Old/unused vulnerable dependencies | Removed unnecessary LangChain/LangGraph runtime; updated and pinned runtime/development dependency closures; refreshed npm lock |
 
-## Executed local verification
+## Executed verification
 
-- Backend: **144 tests passed**, including isolated real Redis tests, pending-entry recovery, atomic queue capacity, concurrent allowance/dispatch tests, HTTP access/session/CSRF tests, signed webhook handling, legacy migration and idempotency.
-- Frontend: **4 tests passed**; lint clean; production build passed.
+- Backend CI: **147 tests passed** on Ubuntu/Python 3.12 with PostgreSQL 16 and Redis 7, including fresh and legacy Alembic upgrades, pending-entry recovery, atomic queue capacity, concurrent allowance/dispatch tests, HTTP access/session/CSRF tests, signed webhook handling and idempotency. [Successful run](https://github.com/TheMS1314/sentinel/actions/runs/43938151453) at commit `b3b7a52`. The earlier complete local suite passed 144 tests before the additional migration cases; local migration checks subsequently passed with the PostgreSQL variants skipped because no local server is available.
+- Frontend: **4 tests passed**, both locally and in GitHub CI; lint clean; production build passed; CI npm audit passed.
 - Runtime dependency audit: **no known vulnerabilities found** in the 47 pinned Python runtime packages at audit time. Frontend npm audit: **zero vulnerabilities**. This is a time-specific advisory check, not a security guarantee.
 - Golden benchmark: **89/89**, synthetic prevalence: **500/500**, hard benchmark: **14/16**. These refreshed runs use mock reasoning; the hard misses are conservative holds where constructed labels expect approval. Safety counts and runtime/dataset fingerprints are saved.
 - Fuzzing: **187 variants, zero selected invariant violations** with isolated contexts.
 - Demo reset/seed: checked against a disposable database, never the user's application database.
 - Compose configuration validated. Docker images and full deployment could not be started because the local Docker daemon is unavailable.
-- PostgreSQL service/concurrency execution is prepared in CI but **has not run**. Local database tests use SQLite, whose locks do not establish PostgreSQL cross-replica behavior. The macOS sandbox prevents starting a separate PostgreSQL shared-memory server here.
+- PostgreSQL service/concurrency and fresh/legacy migration tests **passed in GitHub CI**. Local database tests use SQLite; the macOS sandbox prevents starting a separate PostgreSQL shared-memory server here. Concurrent database sessions exercise PostgreSQL advisory locking; a full container deployment and fault-injection campaign across replicas remain unverified.
 - External OpenRouter/Anthropic and Razorpay test-provider calls were **not made**. Keys, external provider behavior and real signature configuration require separate integration verification.
-- The branch is published and GitHub CI is running. The first run exposed a service health-command quoting error; that configuration is corrected. No deployment or merge was performed.
+- The branch is published and backend/frontend CI jobs passed. The initial service health-command quoting error was corrected and verified by subsequent runs. The latest main README edit was incorporated into this branch. No deployment or merge into main was performed.
 
 ## Important remaining boundaries
 
@@ -67,7 +67,7 @@ This branch replaces several prototype assumptions with explicit authority, acco
 3. A database and external provider cannot share one atomic transaction. Unknown effects stay reserved until a known order is reconciled. A provider idempotency/identity contract is still required before expanding beyond test orders.
 4. Privileged database administrators remain trusted. Separate records and review events are auditable application history, not cryptographically tamper-proof storage.
 5. Compose is a local topology, with shared dependencies and Redis AOF every second. TLS, managed identities/secrets, backups, distributed dependency failover and operator alert delivery belong to a deployment environment; they were not fabricated or provisioned during this task.
-6. Actual PostgreSQL CI and external integration results must be recorded before describing those paths as verified.
+6. PostgreSQL CI verifies the covered database, concurrency and migration paths. External model/provider integrations and full deployment still require their own execution evidence; passing CI does not establish production readiness.
 
 ## Review and publication
 
