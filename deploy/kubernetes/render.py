@@ -64,10 +64,17 @@ http {
   add_header X-Content-Type-Options nosniff always;
   add_header Referrer-Policy same-origin always;
   add_header X-Frame-Options DENY always;
+  location ^~ /api/health { return 404; }
   location /api/ { proxy_pass http://api/; }
-  location = /health { proxy_pass http://api/health/ready; }
-  location = /gateway-live { return 200 "ok"; }
+  location = /health { return 200 "ok"; }
   location / { proxy_pass http://web; }
+ }
+ server { listen 8081;
+  proxy_connect_timeout 2s; proxy_read_timeout 3s;
+  proxy_set_header Host $host;
+  location = /live { return 200 "ok"; }
+  location = /ready { proxy_pass http://api/health/ready; }
+  location / { return 404; }
  }
 }"""
     items.append(
@@ -114,6 +121,7 @@ http {
             volumes.append(dict(name="db-ca", secret=dict(secretName="sentinel-db-ca")))
             c["securityContext"]["runAsUser"] = 10001
         elif name == "sentinel-gateway":
+            c["ports"].append(dict(containerPort=8081, name="probes"))
             c["volumeMounts"].append(
                 dict(
                     name="nginx",
@@ -128,15 +136,9 @@ http {
             c["securityContext"]["runAsUser"] = 101
         else:
             c["securityContext"]["runAsUser"] = 101
-        live = (
-            "/health/live"
-            if api
-            else "/gateway-live"
-            if name == "sentinel-gateway"
-            else "/"
-        )
+        live = "/health/live" if api else "/live" if name == "sentinel-gateway" else "/"
         ready = (
-            "/health/ready" if api else "/health" if name == "sentinel-gateway" else "/"
+            "/health/ready" if api else "/ready" if name == "sentinel-gateway" else "/"
         )
         for key, path in [
             ("livenessProbe", live),
@@ -146,7 +148,7 @@ http {
             c[key] = dict(
                 httpGet=dict(
                     path=path,
-                    port=8000 if api else 8080,
+                    port=8000 if api else 8081 if name == "sentinel-gateway" else 8080,
                     httpHeaders=[dict(name="Host", value=host)],
                 ),
                 timeoutSeconds=3,
