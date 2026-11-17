@@ -132,6 +132,31 @@ check(
 )
 
 
+# Merchant attributes are server-owned once a stable identity is supplied.
+registered = http(
+    "/api/merchants",
+    {
+        "owner_id": "ci-owner",
+        "legal_name": "RegisteredCasino",
+        "category": "casino",
+        "domain": "casino.example",
+        "operator_reference": "Synthetic CI operator registration",
+        "expected_version": 0,
+    },
+)
+check("merchant_directory_registration", registered[0] == 200)
+spoofed = dict(
+    purchase(),
+    merchant_id=registered[1]["merchant_id"],
+    merchant_name="Groceries",
+    merchant_category="grocery",
+)
+check(
+    "merchant_category_cannot_be_spoofed",
+    http("/api/transactions/evaluate", spoofed)[1]["verdict"] == "BLOCK",
+)
+
+
 # Capture actual HTTP throughput scope and both success/failure counts.
 def timed(_):
     start = time.perf_counter()

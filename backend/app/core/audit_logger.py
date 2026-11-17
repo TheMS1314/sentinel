@@ -37,6 +37,8 @@ class AuditLogger:
             agent_id=request.agent_id,
             merchant_name=request.merchant_name,
             merchant_category=request.merchant_category,
+            merchant_id=request.merchant_id,
+            merchant_version=request.merchant_version,
             amount=request.amount,
             requested_at_hour=request.requested_at_hour,
             requested_at_iso=request.requested_at_iso,

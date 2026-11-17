@@ -63,7 +63,7 @@ class RazorpayGateway:
         finally:
             self.client.session.close()
 
-    def reconcile(self, order_id, request_id, amount_paise):
+    def reconcile(self, order_id, request_id, amount_paise, merchant_id=""):
         if self.mock_mode:
             raise ValueError("Provider reconciliation requires test credentials")
         try:
@@ -74,6 +74,10 @@ class RazorpayGateway:
             order.get("amount") != amount_paise
             or order.get("currency") != "INR"
             or order.get("notes", {}).get("sentinel_request_id") != request_id
+            or (
+                merchant_id
+                and order.get("notes", {}).get("sentinel_merchant_id") != merchant_id
+            )
         ):
             raise ValueError("Order does not match the reserved request")
         return {

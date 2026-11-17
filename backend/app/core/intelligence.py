@@ -54,7 +54,7 @@ def control_event(db, actor, kind, entity, before, after):
     )
 
 
-def assess(db, policy, request):
+def _assess_profiles(db, policy, request):
     """Additional signals can restrict authority, never expand it.
 
     Directory bindings are operator assertions, not authenticated merchant identity.
@@ -83,6 +83,9 @@ def assess(db, policy, request):
             status="current" if fresh else "stale",
             score=profile.cyber_risk_score,
             source=profile.source,
+            evidence=profile.evidence,
+            updated_by=profile.updated_by,
+            updated_at=utc(profile.updated_at).isoformat(),
             domain=profile.domain,
             expires_at=utc(profile.expires_at).isoformat(),
         )
@@ -236,8 +239,7 @@ def dispatch_permission(db, payment):
 
 
 def confirmed_dispatch_threat(db, request_id):
-    """Recheck new confirmed evidence just before claiming an approved outbox row."""
-    from app.models.db import DecisionRecord
+    from app.models.db import DecisionRecord, MerchantIdentity
 
     row = (
         db.query(TransactionRecord, DecisionRecord.policy_snapshot)
@@ -247,20 +249,25 @@ def confirmed_dispatch_threat(db, request_id):
     )
     if not row or not row[1]:
         return None
-    profile = (
-        db.query(MerchantRiskProfile)
-        .filter_by(
-            owner_id=row[1]["owner_human_id"],
-            merchant_key=merchant_key(row[0].merchant_name),
-            source="operator",
+    if row[0].merchant_id:
+        identity = db.get(MerchantIdentity, row[0].merchant_id)
+        domain = identity.domain if identity else None
+    else:
+        profile = (
+            db.query(MerchantRiskProfile)
+            .filter_by(
+                owner_id=row[1]["owner_human_id"],
+                merchant_key=merchant_key(row[0].merchant_name),
+                source="operator",
+            )
+            .first()
         )
-        .first()
-    )
+        domain = profile.domain if profile else None
     if (
-        profile
+        domain
         and db.query(ThreatIndicator)
         .filter(
-            ThreatIndicator.domain == profile.domain,
+            ThreatIndicator.domain == domain,
             ThreatIndicator.source == "operator",
             ThreatIndicator.confirmed.is_(True),
             ThreatIndicator.active.is_(True),
@@ -335,3 +342,111 @@ def dispatch_authority(db, request_id):
     if principal.role not in roles or not principal.permits_agent(tx.agent_id, db):
         return "Authorizing credential no longer permits this agent"
     return None
+
+
+def assess(db, policy, request):
+    from app.models.db import MerchantIdentity
+
+    identity = (
+        db.get(MerchantIdentity, request.merchant_id) if request.merchant_id else None
+    )
+    report = _assess_profiles(db, policy, request)
+    if not identity or identity.owner_id != policy.owner_human_id:
+        return report
+    now = processing_time(db)
+    report["identity"] = {
+        "merchant_id": identity.merchant_id,
+        "version": identity.version,
+        "legal_name": identity.legal_name,
+        "category": identity.category,
+        "domain": identity.domain,
+        "approved_by": identity.approved_by,
+        "verification_level": "operator_attested",
+        "settlement_verified": False,
+    }
+    report["coverage"] = "registered_operator_identity"
+    prior_domain = report["vendor"].get("domain")
+    if prior_domain != identity.domain:
+        if prior_domain:
+            report["recommendation"] = "HOLD"
+            report["signals"] = [
+                "Merchant risk profile domain differs from registered identity; refresh evidence"
+            ]
+        matches = []
+        expired = 0
+        for row in db.query(ThreatIndicator).filter_by(
+            domain=identity.domain, active=True
+        ):
+            if utc(row.expires_at) <= now:
+                expired += 1
+                continue
+            matches.append(
+                {
+                    "indicator_id": row.indicator_id,
+                    "source": row.source,
+                    "confirmed": row.confirmed,
+                    "evidence": row.evidence,
+                    "expires_at": utc(row.expires_at).isoformat(),
+                }
+            )
+            confirmed = row.source == "operator" and row.confirmed
+            if confirmed:
+                report["recommendation"] = "BLOCK"
+            elif report["recommendation"] != "BLOCK":
+                report["recommendation"] = "HOLD"
+            report["signals"].append(
+                "Confirmed threat matches registered merchant domain"
+                if confirmed
+                else "Threat evidence for registered merchant requires review"
+            )
+        if expired and report["recommendation"] == "PASS":
+            report["recommendation"] = "HOLD"
+            report["signals"].append("Registered merchant threat evidence expired")
+        report["threat"] = {
+            "status": "matched"
+            if matches
+            else "stale"
+            if expired
+            else "no_local_match",
+            "matches": matches,
+            "expired_matches": expired,
+            "note": "Registered domain binding; absence of local evidence does not prove safety",
+        }
+    owners = (
+        db.query(PolicyRecord.agent_id)
+        .filter_by(owner_human_id=policy.owner_human_id)
+        .distinct()
+    )
+    activity = db.query(TransactionRecord).filter(
+        TransactionRecord.agent_id.in_(owners),
+        TransactionRecord.merchant_id == identity.merchant_id,
+        TransactionRecord.created_at >= now - timedelta(minutes=5),
+        TransactionRecord.created_at <= now,
+        TransactionRecord.request_id != request.request_id,
+    )
+    count, agents = activity.with_entities(
+        func.count(TransactionRecord.id),
+        func.count(func.distinct(TransactionRecord.agent_id)),
+    ).one()
+    seen = (
+        activity.filter(TransactionRecord.agent_id == request.agent_id).first()
+        is not None
+    )
+    total_agents = agents + (0 if seen else 1)
+    alert = count >= 4 and total_agents >= 3
+    report["relations"] = {
+        "enabled": True,
+        "window_seconds": 300,
+        "prior_matching_attempts": count,
+        "agents_including_current": total_agents,
+        "truncated": False,
+        "alert": alert,
+        "calibrated": False,
+    }
+    if alert:
+        if report["recommendation"] != "BLOCK":
+            report["recommendation"] = "HOLD"
+        report["signals"].append(
+            "Several owner-scoped agents target the same registered merchant"
+        )
+    return report

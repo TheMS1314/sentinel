@@ -46,8 +46,9 @@ class PolicyIn(StrictModel):
 class TransactionIn(StrictModel):
     request_id: ID = Field(default_factory=lambda: f"req_{uuid.uuid4().hex}")
     agent_id: ID
-    merchant_name: str = Field(min_length=1, max_length=200)
-    merchant_category: str = Field(min_length=1, max_length=100)
+    merchant_id: ID | None = None
+    merchant_name: str = Field(default="unresolved", min_length=1, max_length=200)
+    merchant_category: str = Field(default="unresolved", min_length=1, max_length=100)
     amount: Money
     requested_at_hour: int = Field(default=0, ge=0, le=23)
     requested_at_iso: str = Field(default="2000-01-01T00:00:00+00:00", max_length=40)
@@ -69,6 +70,12 @@ class TransactionIn(StrictModel):
             raise ValueError(
                 "Production callers must supply a stable request_id for retries"
             )
+        if not self.merchant_id and (
+            self.merchant_name == "unresolved" or self.merchant_category == "unresolved"
+        ):
+            raise ValueError("Provide a merchant_id or legacy merchant name/category")
+        if os.environ.get("SENTINEL_ENV") == "production" and not self.merchant_id:
+            raise ValueError("Production requires a registered merchant_id")
         ts = utc_timestamp(self.requested_at_iso)
         if ts.hour != self.requested_at_hour:
             raise ValueError("requested_at_hour must match UTC timestamp")
@@ -78,6 +85,7 @@ class TransactionIn(StrictModel):
         # A caller cannot choose its own goal, event clock or category authority.
         # Merchant/category remain assertions; use trusted provider IDs before live use.
         data = self.model_dump()
+        data["merchant_id"] = self.merchant_id or ""
         data["raw_agent_goal"] = policy.authorized_goal
         now = datetime.now(timezone.utc)
         data["requested_at_iso"], data["requested_at_hour"] = now.isoformat(), now.hour

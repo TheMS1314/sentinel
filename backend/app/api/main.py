@@ -493,6 +493,8 @@ def _serialize_transaction(tx: TransactionRecord) -> dict:
         "request_id": tx.request_id,
         "agent_id": tx.agent_id,
         "merchant_name": tx.merchant_name,
+        "merchant_id": tx.merchant_id,
+        "merchant_version": tx.merchant_version,
         "merchant_category": tx.merchant_category,
         "amount": float(tx.amount),
         "requested_at_iso": tx.requested_at_iso,
@@ -964,9 +966,15 @@ def reconcile_payment(
     if not payment:
         raise HTTPException(404, "No payment reservation")
     amount_paise = payment.amount_paise
+    merchant_id = (
+        db.query(TransactionRecord.merchant_id)
+        .filter_by(request_id=request_id)
+        .scalar()
+        or ""
+    )
     db.rollback()
     result = SentinelOrchestrator(db).gateway.reconcile(
-        body.order_id, request_id, amount_paise
+        body.order_id, request_id, amount_paise, merchant_id=merchant_id
     )
     payment = (
         db.query(PaymentRecord).filter_by(request_id=request_id).with_for_update().one()
@@ -1130,6 +1138,9 @@ app.include_router(risk_router)
 from app.api.authority import router as authority_router
 
 app.include_router(authority_router)
+from app.api.merchants import router as merchant_router
+
+app.include_router(merchant_router)
 
 
 @app.get(

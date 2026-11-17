@@ -25,6 +25,7 @@ from app.core.validation import validate_request, validate_policy, paise, utc_ti
 from app.core.locking import agent_transaction
 from app.core.intelligence import utc
 from app.core.settings import integer
+from app.core.merchant_identity import resolve as resolve_merchant, dispatch_binding
 from app.core.auth import (
     database_authority,
     principal_from_row,
@@ -146,7 +147,11 @@ class SentinelOrchestrator:
                 scenario_tag,
                 actor_id,
                 execute_payment,
-                semantic=(outcome.policy.to_dict(), semantic),
+                semantic=(
+                    outcome.policy.to_dict(),
+                    semantic,
+                    outcome.request.merchant_version,
+                ),
                 work_lease=work_lease,
                 actor_version=actor_version,
             )
@@ -232,6 +237,13 @@ class SentinelOrchestrator:
                         "requested_at_hour",
                     ):
                         candidate[key] = actual[key]
+                if request.merchant_id and request.merchant_id == actual["merchant_id"]:
+                    for key in (
+                        "merchant_name",
+                        "merchant_category",
+                        "merchant_version",
+                    ):
+                        candidate[key] = actual[key]
                 if actual != candidate or not existing.decision:
                     raise ConflictError(
                         "request_id is already bound to different or incomplete data"
@@ -252,6 +264,7 @@ class SentinelOrchestrator:
                     )
                 if actor_id != "internal" or not request.raw_agent_goal.strip():
                     request.raw_agent_goal = policy.authorized_goal
+                identity_error = resolve_merchant(self.db, policy, request)
                 history, reserved, attempts = self.audit.evaluation_context(
                     request, policy
                 )
@@ -262,14 +275,28 @@ class SentinelOrchestrator:
                     reserved_total_paise=reserved,
                     attempt_count=attempts,
                 )
-                if result.outcome == ESCALATE:
+                if identity_error:
+                    decision = Decision(
+                        request.request_id,
+                        "BLOCK",
+                        [identity_error],
+                        ["merchant_identity"],
+                        "rule_engine",
+                    )
+                elif result.outcome == ESCALATE:
                     if semantic is None:
                         self._refresh_case_index(request.agent_id, policy, request)
                         return SemanticPreparation(
                             AgentPolicy.from_dict(policy.to_dict()),
                             TransactionRequest(**asdict(request)),
                         )
-                    snapshot, decision = semantic
+                    snapshot, decision, merchant_version = semantic
+                    if merchant_version != request.merchant_version:
+                        decision.verdict = "HOLD"
+                        decision.reasons = [
+                            "Merchant identity changed during semantic review"
+                        ]
+                        decision.checked_rules.append("merchant_identity_changed")
                     if snapshot != policy.to_dict():
                         decision.verdict = "HOLD"
                         decision.reasons = [
@@ -322,6 +349,7 @@ class SentinelOrchestrator:
                             state="pending",
                             authorization_policy_id=policy.policy_id,
                             authorizing_credential_version=actor_version,
+                            authorized_merchant_version=request.merchant_version,
                             dispatch_expires_at=processing_time(self.db)
                             + timedelta(
                                 seconds=integer(
@@ -363,6 +391,7 @@ class SentinelOrchestrator:
                 return {"status": "expired"}
             blocked = (
                 dispatch_authority(self.db, request_id)
+                or dispatch_binding(self.db, request_id)
                 or dispatch_permission(self.db, payment)
                 or confirmed_dispatch_threat(self.db, request_id)
             )
@@ -389,12 +418,18 @@ class SentinelOrchestrator:
                 )
             )
             amount = payment.amount_paise / 100
+            merchant_id = (
+                self.db.query(TransactionRecord.merchant_id)
+                .filter_by(request_id=request_id)
+                .scalar()
+            )
+            notes = {"request_id": request_id}
+            if merchant_id:
+                notes["sentinel_merchant_id"] = merchant_id
         # A freeze cannot recall a call already claimed. The global guard lock
         # is released before IO and the claim is visible to subsequent checks.
         try:
-            result = self.gateway.create_order(
-                amount, request_id, {"request_id": request_id}
-            )
+            result = self.gateway.create_order(amount, request_id, notes)
         except Exception:
             result = {"status": "unknown", "order_id": None}
         if not isinstance(result, dict):
@@ -483,6 +518,9 @@ class SentinelOrchestrator:
                         now.hour,
                         now.isoformat(),
                     )
+                identity_error = resolve_merchant(self.db, policy, request)
+                if identity_error:
+                    raise ConflictError(identity_error)
                 history, reserved, attempts = self.audit.evaluation_context(
                     request, policy
                 )
@@ -506,6 +544,7 @@ class SentinelOrchestrator:
                         amount_paise=paise(tx.amount),
                         state="pending",
                         authorization_policy_id=policy.policy_id,
+                        authorized_merchant_version=request.merchant_version,
                         authorizing_credential_version=reviewer_principal.credential_version
                         if reviewer_principal
                         else 1,

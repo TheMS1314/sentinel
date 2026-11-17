@@ -105,10 +105,10 @@ function PolicyEditorForm({ onCreatePolicy, currentPolicy, agentId, ownerId }) {
         <Field label="Blocked merchants">
           <input className="input" value={form.blocked_merchants} onChange={update("blocked_merchants")} />
         </Field>
-        <Field label="Time window start (hr)">
+        <Field label="Time window start (UTC hour)">
           <input className="input" type="number" value={form.time_window_start} onChange={update("time_window_start")} />
         </Field>
-        <Field label="Time window end (hr)">
+        <Field label="Time window end (UTC hour)">
           <input className="input" type="number" value={form.time_window_end} onChange={update("time_window_end")} />
         </Field>
         <Field label="Max transactions / window">

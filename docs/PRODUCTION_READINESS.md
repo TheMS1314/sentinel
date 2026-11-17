@@ -47,6 +47,8 @@ The included Compose stack has a single host, gateway, PostgreSQL node and Redis
 
 An HTTP 200 approval is a recorded authorization decision, not proof of capture. A submitted service request must carry a stable `request_id` in the production profile. Retrying that ID with identical facts returns its durable decision; changing its facts conflicts.
 
+Production requests also require an owner-scoped merchant ID. The directory supplies canonical name/category/domain; agents cannot label a registered casino as groceries. Directory changes invalidate pending version bindings. This closes caller-assertion bypasses, not the external acquirer/settlement verification contract.
+
 An approval reserves allowance and commits a pending payment intent. Dispatch checks its deadline, current policy identity, current authorizing credential scope, emergency limits and confirmed threats before atomically claiming it. Human review binds its new authorization to the policy used at review. A policy change or revoked actor can pause a previously approved intent.
 
 Pending reservations can expire or be cancelled because no provider claim has been made. Processing, created and unknown outcomes cannot be released by that cancellation endpoint. Only verified capture counts as completed spending. A process can crash immediately before or after external IO; the database cannot prove which happened. Unknown states require provider reconciliation. Stable receipt correlation is not a substitute for a contractual provider idempotency guarantee.

@@ -78,12 +78,15 @@ class TransactionRecord(Base):
         CheckConstraint("amount > 0", name="ck_positive_amount"),
         Index("ix_agent_event", "agent_id", "requested_at_iso"),
         Index("ix_transaction_processing", "agent_id", "created_at"),
+        Index("ix_merchant_activity", "merchant_id", "created_at", "agent_id"),
     )
     id = Column(Integer, primary_key=True)
     request_id = Column(String, unique=True, index=True, nullable=False)
     agent_id = Column(String, index=True, nullable=False)
     merchant_name = Column(String, nullable=False)
     merchant_category = Column(String, nullable=False)
+    merchant_id = Column(String, nullable=False, default="")
+    merchant_version = Column(Integer, nullable=False, default=0)
     amount = Column(Numeric(14, 2), nullable=False)
     requested_at_hour = Column(Integer, nullable=False)
     requested_at_iso = Column(String, index=True, nullable=False)
@@ -149,6 +152,7 @@ class PaymentRecord(Base):
     dispatch_expires_at = Column(DateTime, default=dispatch_deadline, nullable=True)
     authorization_policy_id = Column(String, nullable=True)
     authorizing_credential_version = Column(Integer, default=1, nullable=False)
+    authorized_merchant_version = Column(Integer, default=0, nullable=False)
 
 
 class ReviewEvent(Base):
@@ -301,4 +305,18 @@ class ServiceCredential(Base):
     expires_at = Column(DateTime, nullable=True)
     version = Column(Integer, nullable=False, default=1)
     updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=now_utc)
+
+
+class MerchantIdentity(Base):
+    __tablename__ = "merchant_identities"
+    merchant_id = Column(String, primary_key=True)
+    owner_id = Column(String, nullable=False, index=True)
+    legal_name = Column(String, nullable=False)
+    category = Column(String, nullable=False)
+    domain = Column(String, nullable=False)
+    operator_reference = Column(Text, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    version = Column(Integer, nullable=False, default=1)
+    approved_by = Column(String, nullable=False)
     updated_at = Column(DateTime, nullable=False, default=now_utc)

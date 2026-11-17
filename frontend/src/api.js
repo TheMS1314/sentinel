@@ -54,6 +54,8 @@ function qs(params) {
 }
 
 export const api = {
+  listMerchants: () => request("/merchants"),
+  saveMerchant: (body) => request("/merchants", {method:"POST",body:JSON.stringify(body)}),
   listCredentials: () => request("/credentials"),
   changeCredential: (body) => request("/credentials", {method:"POST",body:JSON.stringify(body)}),
   login: (credential) => request("/auth/login", {method: "POST", body: JSON.stringify({credential})}),

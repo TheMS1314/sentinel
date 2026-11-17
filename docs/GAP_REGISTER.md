@@ -4,8 +4,8 @@ This register distinguishes implemented software, executed checks and external r
 
 | ID | Gap | Software completion target | External proof needed | Current state |
 |---|---|---|---|---|
-| G01 | Per-replica configured credentials can drift | Database-backed scoped credentials, immediate shared revocation/rotation, audited administrator operations, safe bootstrap | Deployment identity/SSO integration if customer sign-in is required | Implemented; local tests pass, CI pending |
-| G02 | Agent-asserted merchant names/categories | Owner-scoped stable merchant IDs, server-owned attributes, lifecycle/version checks at authorization and dispatch | Acquirer/provider proof and settlement binding before real money | In progress |
+| G01 | Per-replica configured credentials can drift | Database-backed scoped credentials, immediate shared revocation/rotation, audited administrator operations, safe bootstrap | Deployment identity/SSO integration if customer sign-in is required | Implemented; PostgreSQL/replica CI passed |
+| G02 | Agent-asserted merchant names/categories | Owner-scoped stable merchant IDs, server-owned attributes, lifecycle/version checks at authorization and dispatch | Acquirer/provider proof and settlement binding before real money | Stable operator identity implemented; CI pending; external settlement proof blocked |
 | G03 | Monitoring has no delivered alerts or incident workflow | Durable alert delivery with retries, administrator incident lifecycle, protected metrics/export, tested sink | Configure and verify an actual operational recipient | Open |
 | G04 | Named commercial services are disconnected | Documented API adapters with schema validation, freshness/provenance and bounded transport; explicit unconfigured/error states | Licensed access to Recorded Future/RiskRecon/Mastercard as applicable | Open; credentials/entitlements unavailable |
 | G05 | Deployment topology and database privileges are only local | Restricted runtime DB grants, migration separation, TLS/HA deployment configuration and automated validation | Real cluster/account/domain, managed database/cache HA and failover exercise | Open |

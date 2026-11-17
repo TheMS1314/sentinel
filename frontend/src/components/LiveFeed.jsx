@@ -61,6 +61,8 @@ function TransactionDetails({ tx }) {
     ["Request ID", tx.request_id],
     ["Agent", tx.agent_id],
     ["Category", tx.merchant_category],
+    ["Merchant ID", tx.merchant_id || "Legacy assertion"],
+    ["Merchant version", tx.merchant_version || "—"],
     ["Decided by", tx.decided_by || "—"],
     ["Model self-confidence", tx.confidence != null ? `${(tx.confidence * 100).toFixed(0)}%` : "—"],
     ["Model", tx.model_version || "—"],

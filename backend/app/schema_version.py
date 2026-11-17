@@ -1,1 +1,1 @@
-SCHEMA_REVISION = "0004_shared_authority"
+SCHEMA_REVISION = "0005_merchant_identity"

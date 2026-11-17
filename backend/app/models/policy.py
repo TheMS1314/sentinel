@@ -18,7 +18,7 @@ import json
 
 @dataclass
 class TimeWindow:
-    """Allowed hours of operation, in 24h local time."""
+    """Allowed hours of operation, in 24h UTC."""
 
     start_hour: int = 0  # 0-23
     end_hour: int = 23  # 0-23, inclusive
@@ -98,10 +98,12 @@ class TransactionRequest:
     merchant_name: str
     merchant_category: str
     amount: float
-    requested_at_hour: int  # 0-23, local time of the request
+    requested_at_hour: int  # 0-23, UTC time of the request
     requested_at_iso: str  # full ISO timestamp for logging
     stated_intent: str  # what the agent claims it's buying / why
     raw_agent_goal: str = ""  # the original human-given goal, for drift detection
+    merchant_id: str = ""
+    merchant_version: int = 0
 
 
 VERDICT_APPROVE = "APPROVE"

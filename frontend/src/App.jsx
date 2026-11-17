@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Activity, ShieldCheck, BarChart3 } from "lucide-react";
 import { api } from "./api";
+import MerchantDirectory from "./components/MerchantDirectory";
 import AccessControl from "./components/AccessControl";
 import RiskIntelligence from "./components/RiskIntelligence";
 import LiveFeed from "./components/LiveFeed";
@@ -20,6 +21,7 @@ const TABS = [
   { id: "feed", label: "Live feed", Icon: Activity },
   { id: "policy", label: "Policy", Icon: ShieldCheck },
   { id: "eval", label: "Evaluation", Icon: BarChart3 },
+  { id: "merchants", label: "Merchants", Icon: ShieldCheck },
   { id: "access", label: "Access", Icon: ShieldCheck },
   { id: "risk", label: "Risk intelligence", Icon: ShieldCheck },
 ];
@@ -387,6 +389,7 @@ export function Dashboard({ identity, onLogout }) {
 
         {tab === "eval" && <EvalResults report={evalReport} />}
         {tab === "risk" && identity.role === "admin" && <RiskIntelligence />}
+        {tab === "merchants" && ["admin","owner","reviewer"].includes(identity.role) && <MerchantDirectory identity={identity} />}
         {tab === "access" && identity.role === "admin" && <AccessControl currentSubject={identity.subject} />}
       </main>
     </div>
