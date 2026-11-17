@@ -1,0 +1,186 @@
+{
+  "implementation_sha": "6d14612399ac4cbcbee184a6bc1964fa86aab764",
+  "ci_merge_commit": "c7b853f3a8c096b9f53d21fa8d5334048d8acc19",
+  "workflow_url": "https://github.com/TheMS1314/sentinel/actions/runs/44129756194",
+  "date": "2026-11-17",
+  "backend_tests_passed": 286,
+  "frontend_tests_passed": 19,
+  "jobs": {
+    "frontend": {
+      "id": 134203414877,
+      "conclusion": "success"
+    },
+    "containers": {
+      "id": 134203415448,
+      "conclusion": "success"
+    },
+    "deployment-gateway": {
+      "id": 134203415542,
+      "conclusion": "success"
+    },
+    "backend": {
+      "id": 134203415779,
+      "conclusion": "success"
+    }
+  },
+  "application_container_checks": [
+    "built_frontend",
+    "policy_create",
+    "approve",
+    "replay",
+    "changed_replay_conflicts",
+    "hard_cap",
+    "merchant_directory_registration",
+    "merchant_category_cannot_be_spoofed",
+    "http_concurrency",
+    "shared_credential_issue",
+    "shared_credential_authentication",
+    "shared_credential_revoke",
+    "revocation_reaches_all_replicas",
+    "freeze",
+    "frozen_approval",
+    "cancel_undispatched",
+    "unfreeze",
+    "durable_batch_accepted",
+    "quota_outage_fails_closed",
+    "liveness_survives_quota_outage",
+    "readiness_reports_quota_outage",
+    "accepted_jobs_survive_redis_outage",
+    "database_outage_fails_closed",
+    "liveness_survives_database_outage",
+    "readiness_reports_database_outage",
+    "database_restart_recovery",
+    "one_backend_down",
+    "backend_recreation_dns",
+    "backup_restore_records_and_schema",
+    "restricted_runtime_database_authority",
+    "incident_create",
+    "signed_https_alert_delivered",
+    "https_sink_received_unique_event",
+    "protected_operational_metrics",
+    "scheduled_provider_merchant",
+    "scheduled_provider_binding",
+    "scheduled_provider_missing_key_is_explicit",
+    "scheduled_provider_absence_holds_payment",
+    "scheduled_provider_replica_claim_is_unique"
+  ],
+  "gateway_routing": {
+    "scope": "disposable Gateway API / Envoy / rendered nginx / fixture upstreams; not full Sentinel production rollout",
+    "checks": {
+      "gateway_routes_accepted_and_references_resolved": "pass",
+      "http_redirects_to_exact_https_host": "pass",
+      "https_certificate_validated_and_fixture_frontend_routed": "pass",
+      "https_hsts_header": "pass",
+      "https_api_prefix_routed": "pass",
+      "public_health_is_gateway_only": "pass",
+      "dependency_probes_not_public": "pass",
+      "unknown_http_host_not_redirected": "pass",
+      "mismatched_https_host_rejected": "pass",
+      "untrusted_certificate_rejected": "pass",
+      "tls_secret_rotation_reloaded": "pass"
+    },
+    "gateway_class": "sentinel-ci",
+    "fixture_image": "nginx/nginx-unprivileged@sha256:f90ef283a8a580912aa56315c3ed8f54cf50c2e89ed7e6fbf4c53368b55d712f",
+    "controller_version": "v1.10.0"
+  },
+  "kubernetes_application": {
+    "scope": "real Sentinel Kubernetes images, mock model/payment providers, disposable SQL/Redis",
+    "checks": {
+      "rendered_migration_job_completed": "pass",
+      "sentinel-api_two_ready_replicas_on_distinct_nodes": "pass",
+      "sentinel-frontend_two_ready_replicas_on_distinct_nodes": "pass",
+      "sentinel-gateway_two_ready_replicas_on_distinct_nodes": "pass",
+      "actual_runtime_grants_and_no_provisioning_secret": "pass",
+      "actual_built_frontend_through_verified_https": "pass",
+      "unauthenticated_api_rejected": "pass",
+      "https_policy_create": "pass",
+      "https_mock_payment_approved": "pass",
+      "https_idempotent_replay": "pass",
+      "https_conflicting_replay_rejected": "pass",
+      "https_policy_hard_cap_blocks": "pass",
+      "https_serves_during_single_api_replacement": "pass",
+      "replacement_replica_recovers": "pass",
+      "ledger_replay_survives_replica_replacement": "pass",
+      "two_node_rolling_restart_completes": "pass",
+      "quota_outage_liveness_200_readiness_503": "pass",
+      "quota_outage_financial_admission_unavailable": "pass",
+      "quota_recovery_restores_https_api": "pass",
+      "private_dependency_probes_remain_unpublished": "pass"
+    },
+    "overrides": [
+      "development provider profile",
+      "commit-tagged locally loaded app images",
+      "plaintext disposable SQL/Redis"
+    ],
+    "not_proven": [
+      "production-profile credentials or dependency TLS",
+      "network-policy enforcement by kind CNI",
+      "cloud/multi-zone HA",
+      "real provider contracts",
+      "persistent-volume recovery"
+    ],
+    "images": {
+      "backend": "sentinel-ci-backend:c7b853f3a8c096b9f53d21fa8d5334048d8acc19",
+      "frontend": "sentinel-ci-frontend:c7b853f3a8c096b9f53d21fa8d5334048d8acc19",
+      "gateway": "nginx/nginx-unprivileged@sha256:f90ef283a8a580912aa56315c3ed8f54cf50c2e89ed7e6fbf4c53368b55d712f"
+    },
+    "pods": [
+      {
+        "name": "sentinel-api-7dbd84cc44-nplgp",
+        "node": "sentinel-gateway-worker2",
+        "image_ids": [
+          "docker.io/library/import-2026-11-17@sha256:1560caeccc7f8cfce68aa251ef394349c462259ccc9b2fa350ae4fe249bcc15b"
+        ]
+      },
+      {
+        "name": "sentinel-api-7dbd84cc44-pjclj",
+        "node": "sentinel-gateway-worker",
+        "image_ids": [
+          "docker.io/library/import-2026-11-17@sha256:1560caeccc7f8cfce68aa251ef394349c462259ccc9b2fa350ae4fe249bcc15b"
+        ]
+      },
+      {
+        "name": "sentinel-frontend-58945d77b4-j4qth",
+        "node": "sentinel-gateway-worker",
+        "image_ids": [
+          "sha256:dc05df5324b407237b5726a80a28e96839f964b6abea8a76564650152bda0260"
+        ]
+      },
+      {
+        "name": "sentinel-frontend-58945d77b4-w78hz",
+        "node": "sentinel-gateway-worker2",
+        "image_ids": [
+          "sha256:dc05df5324b407237b5726a80a28e96839f964b6abea8a76564650152bda0260"
+        ]
+      },
+      {
+        "name": "sentinel-gateway-6598dd6ff5-2kh4n",
+        "node": "sentinel-gateway-worker",
+        "image_ids": [
+          "docker.io/nginx/nginx-unprivileged@sha256:f90ef283a8a580912aa56315c3ed8f54cf50c2e89ed7e6fbf4c53368b55d712f"
+        ]
+      },
+      {
+        "name": "sentinel-gateway-6598dd6ff5-qtftr",
+        "node": "sentinel-gateway-worker2",
+        "image_ids": [
+          "docker.io/nginx/nginx-unprivileged@sha256:f90ef283a8a580912aa56315c3ed8f54cf50c2e89ed7e6fbf4c53368b55d712f"
+        ]
+      }
+    ]
+  },
+  "ci_maintenance": {
+    "actions": "Node 24 actions pinned to reviewed v6 commit SHAs",
+    "runner": "ubuntu-24.04",
+    "duplicate_runs": "branch concurrency cancellation"
+  },
+  "remaining_release_gates": [
+    "production infrastructure, dependency TLS, NetworkPolicy enforcement and multi-zone failover",
+    "public TLS/DNS/issuer/renewal and secret management",
+    "actual operational notification recipient",
+    "licensed commercial/model/test-provider verification",
+    "representative independent labels and calibration",
+    "acquirer/settlement identity proof before unsupported real-money operations"
+  ],
+  "main_merged": false
+}

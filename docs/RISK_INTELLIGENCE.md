@@ -77,7 +77,7 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 
 ## Executed verification
 
-Latest [run 44100786661](https://github.com/TheMS1314/sentinel/actions/runs/44100786661) passed **282 backend tests, 19 frontend tests, 39 application-container checks and 11 Gateway API/TLS routing checks**, runtime audits and nginx config validation. [Current evidence](verification/gateway-ci.json) keeps routing fixtures separate from live commercial/model/payment verification. The latter remains a release gate.
+Latest [run 44129756194](https://github.com/TheMS1314/sentinel/actions/runs/44129756194), implementation `6d14612399ac4cbcbee184a6bc1964fa86aab764`, passed **286 backend tests, 19 frontend tests, 39 application-container checks, 11 Gateway API/TLS routing checks and 20 actual-application Kubernetes checks**, plus lint/build and runtime audits. The real backend/frontend, migration job, restricted grants and two replicas per serving tier run on separate Kind worker nodes behind verified HTTPS. Checks include idempotence, hard caps, pod replacement, rolling restart and Redis outage/recovery. The Kubernetes exercise explicitly uses development mock providers and disposable plaintext SQL/Redis; production transport, NetworkPolicy enforcement, persistent-volume recovery, live contracts and cloud HA remain external gates. [Current evidence](verification/kubernetes-ci.json). Earlier verification files remain historical snapshots.
 
 ## Commercial integration path
 
