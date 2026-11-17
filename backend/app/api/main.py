@@ -4,7 +4,7 @@ from app.core.env import load_env
 
 load_env()
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Optional
 import asyncio
 import json
@@ -47,6 +47,7 @@ from app.core.auth import (
 from app.core.rate_limit import enforce_rate_limit
 from app.core.logging_middleware import StructuredLoggingMiddleware
 from app.core.locking import agent_transaction
+from app.core.intelligence import processing_time
 from app.core.orchestrator import SentinelOrchestrator, ConflictError
 from app.core.schemas import (
     PolicyIn,
@@ -460,7 +461,7 @@ def login(
     if principal.role == "agent":
         raise HTTPException(403, "Agent credentials cannot create browser sessions")
     token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
+    now = processing_time(db)
     db.query(BrowserSession).filter(BrowserSession.expires_at < now).delete()
     db.add(
         BrowserSession(
@@ -1134,6 +1135,7 @@ def reconcile_payment(
             raise HTTPException(409, "Cannot downgrade captured state")
         before = dict(state=payment.state, order_id=payment.order_id)
         payment.state, payment.order_id = result["status"], result["order_id"]
+        payment.updated_at = processing_time(db)
         decision = db.query(DecisionRecord).filter_by(request_id=request_id).one()
         decision.razorpay_status, decision.razorpay_ref = (
             payment.state,
@@ -1180,6 +1182,7 @@ def cancel_pending_payment(
         if payment is None or payment.state != "pending":
             raise ConflictError("Only an undispatched pending payment can be cancelled")
         payment.state, payment.error = "cancelled", body.reason
+        payment.updated_at = processing_time(db)
         db.query(DecisionRecord).filter_by(
             request_id=request_id
         ).one().razorpay_status = "cancelled"
@@ -1283,6 +1286,7 @@ def record_provider_event(raw, signature, event_id):
                 raise HTTPException(409, "Event ID is already bound to different data")
             return {"status": "duplicate"}
         payment.state = "captured"
+        payment.updated_at = processing_time(db)
         db.query(DecisionRecord).filter_by(
             request_id=payment.request_id
         ).one().razorpay_status = "captured"

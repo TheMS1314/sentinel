@@ -179,7 +179,7 @@ class SentinelOrchestrator:
                     .with_for_update()
                     .first()
                 )
-                principal = principal_from_row(row)
+                principal = principal_from_row(row, now=processing_time(self.db))
                 if (
                     principal is None
                     or principal.credential_version != actor_version
@@ -347,6 +347,7 @@ class SentinelOrchestrator:
                             request_id=request.request_id,
                             amount_paise=paise(request.amount),
                             state="pending",
+                            updated_at=processing_time(self.db),
                             authorization_policy_id=policy.policy_id,
                             authorizing_credential_version=actor_version,
                             authorized_merchant_version=request.merchant_version,
@@ -387,6 +388,7 @@ class SentinelOrchestrator:
                     "expired",
                     "Approval expired before dispatch; submit a fresh request",
                 )
+                payment.updated_at = processing_time(self.db)
                 self.audit.update_razorpay_status(request_id, "expired", None)
                 return {"status": "expired"}
             blocked = (
@@ -406,7 +408,9 @@ class SentinelOrchestrator:
                     PaymentRecord.request_id == request_id,
                     PaymentRecord.state == "pending",
                 )
-                .values(state="processing", error=None)
+                .values(
+                    state="processing", error=None, updated_at=processing_time(self.db)
+                )
             ).rowcount
             if claimed != 1:
                 raise ConflictError("Payment dispatch claim changed concurrently")
@@ -456,6 +460,7 @@ class SentinelOrchestrator:
             self.db.commit()
             return outcome
         payment.state, payment.order_id = status, result.get("order_id")
+        payment.updated_at = processing_time(self.db)
         payment.error = result.get("error")
         self.audit.update_razorpay_status(request_id, status, payment.order_id)
         self.db.commit()
@@ -513,7 +518,7 @@ class SentinelOrchestrator:
                     reviewer_id != "internal"
                     or os.environ.get("SENTINEL_ENV") == "production"
                 ):
-                    now = datetime.now(timezone.utc)
+                    now = processing_time(self.db)
                     request.requested_at_hour, request.requested_at_iso = (
                         now.hour,
                         now.isoformat(),
@@ -543,6 +548,7 @@ class SentinelOrchestrator:
                         request_id=request_id,
                         amount_paise=paise(tx.amount),
                         state="pending",
+                        updated_at=processing_time(self.db),
                         authorization_policy_id=policy.policy_id,
                         authorized_merchant_version=request.merchant_version,
                         authorizing_credential_version=reviewer_principal.credential_version
@@ -565,7 +571,7 @@ class SentinelOrchestrator:
             record.human_override = human_verdict
             record.resolved_by, record.resolved_at = (
                 reviewer_id,
-                datetime.now(timezone.utc),
+                processing_time(self.db),
             )
             record.resolution_reason = reason
             self.db.add(

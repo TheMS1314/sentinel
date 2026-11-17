@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -43,6 +43,47 @@ def db(monkeypatch):
 
 def admin():
     return authenticate(KEY)
+
+
+def test_credential_expiry_uses_authority_clock_even_when_replica_clock_lags(db):
+    from app.core.auth import assert_current_principal
+
+    principal = admin()
+    expires = datetime.now(timezone.utc) + timedelta(days=1)
+    db.get(ServiceCredential, "shared-admin").expires_at = expires
+    db.commit()
+    with patch(
+        "app.core.auth.processing_time", return_value=expires + timedelta(seconds=1)
+    ):
+        with pytest.raises(HTTPException):
+            authenticate(KEY)
+        with pytest.raises(HTTPException):
+            assert_current_principal(principal, db)
+
+
+def test_browser_session_issue_and_expiry_share_database_clock(db):
+    from app.models.db import BrowserSession
+    from app.core.auth import digest
+
+    trusted = datetime.now(timezone.utc) - timedelta(days=2)
+    client = TestClient(app)
+    with patch("app.api.main.processing_time", return_value=trusted):
+        response = client.post(
+            "/auth/login",
+            json={"credential": KEY},
+            headers={"Origin": "http://localhost:5173"},
+        )
+    assert response.status_code == 200
+    row = db.get(BrowserSession, digest(client.cookies.get("sentinel_session")))
+    assert row.expires_at.replace(tzinfo=timezone.utc) == trusted + timedelta(hours=8)
+    with patch(
+        "app.core.auth.processing_time", return_value=trusted + timedelta(hours=7)
+    ):
+        assert client.get("/auth/me").status_code == 200
+    with patch(
+        "app.core.auth.processing_time", return_value=trusted + timedelta(hours=9)
+    ):
+        assert client.get("/auth/me").status_code == 401
 
 
 def action(db, subject, kind, version, **fields):

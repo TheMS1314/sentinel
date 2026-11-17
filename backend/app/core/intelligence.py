@@ -324,7 +324,7 @@ def dispatch_authority(db, request_id):
             .with_for_update()
             .first()
         )
-        principal = principal_from_row(row)
+        principal = principal_from_row(row, now=processing_time(db))
     else:
         principal = principal_for_subject(actor)
     payment = db.get(PaymentRecord, request_id)
@@ -389,10 +389,12 @@ def assess(db, policy, request):
     prior_domain = report["vendor"].get("domain")
     if prior_domain != identity.domain:
         if prior_domain:
-            report["recommendation"] = "HOLD"
-            report["signals"] = [
+            report["profile_domain_threat"] = report["threat"]
+            if report["recommendation"] != "BLOCK":
+                report["recommendation"] = "HOLD"
+            report["signals"].append(
                 "Merchant risk profile domain differs from registered identity; refresh evidence"
-            ]
+            )
         matches = []
         expired = 0
         for row in db.query(ThreatIndicator).filter_by(

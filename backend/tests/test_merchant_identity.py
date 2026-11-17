@@ -18,7 +18,7 @@ from app.models.db import (
     ThreatIndicator,
 )
 from app.models.policy import Decision
-from test_intelligence import make_policy, request
+from test_intelligence import make_policy, request, profile, indicator
 
 
 @pytest.fixture
@@ -52,6 +52,38 @@ def identity(db, p, **changes):
     db.add(row)
     db.commit()
     return row
+
+
+def test_domain_mismatch_never_softens_confirmed_block_or_erases_evidence(db):
+    from app.core.intelligence import merchant_key
+
+    p = make_policy(db)
+    m = identity(db, p)
+    profile(
+        db,
+        p,
+        merchant_name=m.legal_name,
+        merchant_key=merchant_key(m.legal_name),
+        domain="previous.example",
+    )
+    threat = indicator(db, domain="previous.example")
+    req = request(p, merchant_id=m.merchant_id)
+    decision = SentinelOrchestrator(db).evaluate_transaction(p, req)
+    assert decision.verdict == "BLOCK"
+    assert db.get(PaymentRecord, req.request_id) is None
+    evidence = (
+        db.query(IntelligenceAssessment)
+        .filter_by(request_id=req.request_id)
+        .one()
+        .report
+    )
+    assert evidence["recommendation"] == "BLOCK"
+    assert (
+        evidence["profile_domain_threat"]["matches"][0]["indicator_id"]
+        == threat.indicator_id
+    )
+    assert any("differs" in s for s in evidence["signals"])
+    assert any("Operator-confirmed" in s for s in evidence["signals"])
 
 
 def test_id_overrides_agent_merchant_attributes_and_preserves_canonical_record(db):

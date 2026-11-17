@@ -5,13 +5,13 @@ Roles: admin, owner, reviewer, agent. Legacy shared key is development-only.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
 import os
 from fastapi import Request, HTTPException
 from app.models.db import SessionLocal, BrowserSession, ServiceCredential
+from app.core.intelligence import processing_time, utc
 
 DEV_DEFAULT_KEY = "dev-only-insecure-key-change-me"
 
@@ -84,16 +84,8 @@ def database_authority():
     return backend == "database"
 
 
-def principal_from_row(row):
-    if (
-        not row
-        or not row.active
-        or (
-            row.expires_at
-            and row.expires_at.replace(tzinfo=timezone.utc)
-            <= datetime.now(timezone.utc)
-        )
-    ):
+def principal_from_row(row, *, now):
+    if not row or not row.active or (row.expires_at and utc(row.expires_at) <= now):
         return None
     return Principal(
         row.subject, row.role, row.owner_id, tuple(row.agent_ids), row.version
@@ -103,9 +95,13 @@ def principal_from_row(row):
 def principal_for_subject(subject, db=None):
     if database_authority():
         if db is not None:
-            return principal_from_row(db.get(ServiceCredential, subject))
+            return principal_from_row(
+                db.get(ServiceCredential, subject), now=processing_time(db)
+            )
         with SessionLocal() as db:
-            return principal_from_row(db.get(ServiceCredential, subject))
+            return principal_from_row(
+                db.get(ServiceCredential, subject), now=processing_time(db)
+            )
     item = next((r for r in credentials() if r["subject"] == subject), None)
     return (
         Principal(
@@ -123,11 +119,13 @@ def principal_for_fingerprint(fingerprint, db=None):
     if database_authority():
         if db is not None:
             return principal_from_row(
-                db.query(ServiceCredential).filter_by(key_hash=fingerprint).first()
+                db.query(ServiceCredential).filter_by(key_hash=fingerprint).first(),
+                now=processing_time(db),
             )
         with SessionLocal() as owned:
             return principal_from_row(
-                owned.query(ServiceCredential).filter_by(key_hash=fingerprint).first()
+                owned.query(ServiceCredential).filter_by(key_hash=fingerprint).first(),
+                now=processing_time(owned),
             )
     for item in credentials():
         if hmac.compare_digest(digest(item["key"]), fingerprint):
@@ -155,7 +153,8 @@ def validate_authority():
             rows = (
                 db.query(ServiceCredential).filter_by(role="admin", active=True).all()
             )
-            if not any(principal_from_row(row) for row in rows):
+            now = processing_time(db)
+            if not any(principal_from_row(row, now=now) for row in rows):
                 raise RuntimeError(
                     "Bootstrap an active administrator credential before serving requests"
                 )
@@ -176,9 +175,7 @@ def require_api_key(request: Request):
         db = SessionLocal()
         try:
             session = db.get(BrowserSession, digest(token)) if token else None
-            if not session or session.expires_at.replace(
-                tzinfo=timezone.utc
-            ) <= datetime.now(timezone.utc):
+            if not session or utc(session.expires_at) <= processing_time(db):
                 raise HTTPException(401, "Sign in required")
             principal = principal_for_fingerprint(session.credential_hash, db=db)
             if principal is None:
@@ -212,7 +209,7 @@ def assert_current_principal(principal, db):
         .with_for_update()
         .first()
     )
-    if principal_from_row(row) != principal:
+    if principal_from_row(row, now=processing_time(db)) != principal:
         raise HTTPException(
             401, "Credential was revoked or changed during the operation"
         )

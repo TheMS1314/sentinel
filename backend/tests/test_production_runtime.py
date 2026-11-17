@@ -289,6 +289,33 @@ def test_sql_lease_fences_stale_worker_completion(db):
     assert q.get_job(jid)["result"] == {"current": True}
 
 
+def test_expired_sql_lease_cannot_be_resurrected_or_finished_before_takeover(db):
+    q = PostgresEvaluationQueue(lambda p: p)
+    jid = asyncio.run(q.enqueue({"agent_id": "a"}))
+    _, old_token, _ = q._claim()
+    db.get(EvaluationJob, jid).lease_expires_at = datetime.now(
+        timezone.utc
+    ) - timedelta(seconds=1)
+    db.commit()
+    assert not q._renew(jid, old_token)
+    assert not q._finish(jid, old_token, result={"late": True})
+    assert q.get_job(jid)["status"] == "PROCESSING"
+    _, winner, _ = q._claim()
+    assert winner != old_token
+    assert q._renew(jid, winner)
+    assert q._finish(jid, winner, result={"recovered": True})
+
+
+def test_job_admission_timestamps_use_database_clock(db, monkeypatch):
+    trusted = datetime.now(timezone.utc) - timedelta(days=3)
+    monkeypatch.setattr("app.core.postgres_queue.processing_time", lambda db: trusted)
+    q = PostgresEvaluationQueue(lambda p: p)
+    jid = asyncio.run(q.enqueue({"agent_id": "a"}))
+    row = db.get(EvaluationJob, jid)
+    assert row.created_at.replace(tzinfo=timezone.utc) == trusted
+    assert row.updated_at.replace(tzinfo=timezone.utc) == trusted
+
+
 def test_sql_claims_are_unique_across_workers(db):
     q = PostgresEvaluationQueue(lambda p: p)
     ids = asyncio.run(q.enqueue_batch([{"agent_id": "a"} for _ in range(4)]))

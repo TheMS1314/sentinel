@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 import time
+import math
+from collections import OrderedDict
 from threading import Lock
 
 
 class TTLCache:
-    def __init__(self, ttl_seconds: float = 30.0):
+    def __init__(self, ttl_seconds: float = 30.0, max_entries: int = 1024):
+        if (
+            not math.isfinite(ttl_seconds)
+            or ttl_seconds <= 0
+            or type(max_entries) is not int
+            or max_entries < 1
+        ):
+            raise ValueError(
+                "Cache needs a finite positive TTL and positive entry bound"
+            )
         self.ttl = ttl_seconds
-        self._store: dict[str, tuple[float, object]] = {}
+        self.max_entries = max_entries
+        self._store = OrderedDict()
         self._lock = Lock()
 
     def get(self, key: str):
@@ -17,14 +29,24 @@ class TTLCache:
             if entry is None:
                 return None
             expires_at, value = entry
-            if time.time() > expires_at:
+            if time.monotonic() >= expires_at:
                 del self._store[key]
                 return None
+            self._store.move_to_end(key)
             return value
 
     def set(self, key: str, value):
         with self._lock:
-            self._store[key] = (time.time() + self.ttl, value)
+            now = time.monotonic()
+            self._prune(now)
+            self._store[key] = (now + self.ttl, value)
+            self._store.move_to_end(key)
+            while len(self._store) > self.max_entries:
+                self._store.popitem(last=False)
+
+    def _prune(self, now):
+        for key in [k for k, (expiry, _) in self._store.items() if expiry <= now]:
+            del self._store[key]
 
     def invalidate(self, key: str):
         with self._lock:
@@ -42,6 +64,5 @@ class TTLCache:
 
     def stats(self) -> dict:
         with self._lock:
-            now = time.time()
-            live = sum(1 for exp, _ in self._store.values() if exp > now)
-            return {"total_entries": len(self._store), "live_entries": live}
+            self._prune(time.monotonic())
+            return {"total_entries": len(self._store), "live_entries": len(self._store)}

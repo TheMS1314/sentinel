@@ -25,6 +25,7 @@ def recover_stale_dispatches(db, limit=50):
     )
     for row in rows:
         row.state = "unknown"
+        row.updated_at = processing_time(db)
         row.error = "Dispatch worker stopped before a known outcome; provider reconciliation required"
         decision = db.query(DecisionRecord).filter_by(request_id=row.request_id).first()
         if decision:

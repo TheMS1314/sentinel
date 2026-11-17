@@ -33,7 +33,13 @@ class RedisCache:
         url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
         if redis_lib is None:
             raise RuntimeError("redis package not installed -- pip install redis")
-        self._client = redis_lib.Redis.from_url(url, decode_responses=True)
+        self._client = redis_lib.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            max_connections=16,
+        )
 
     def _k(self, key: str) -> str:
         return f"{self.key_prefix}{key}"
@@ -43,7 +49,8 @@ class RedisCache:
             raw = self._client.get(self._k(key))
         except Exception as e:
             logger.warning(
-                f"Redis GET failed for {key} ({e}); treating as a cache miss."
+                "Redis GET unavailable (%s); treating as a cache miss.",
+                type(e).__name__,
             )
             return None
         if raw is None:
@@ -51,7 +58,7 @@ class RedisCache:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning(f"Corrupt cache value for key {key}, dropping it.")
+            logger.warning("Corrupt cache value; dropping it.")
             try:
                 self._client.delete(self._k(key))
             except Exception:
@@ -66,7 +73,8 @@ class RedisCache:
             # a failed cache write must not fail the request that triggered
             # it. The next read will just be a cache miss and recompute.
             logger.warning(
-                f"Redis SET failed for {key} ({e}); continuing without caching this value."
+                "Redis SET unavailable (%s); continuing without cache.",
+                type(e).__name__,
             )
 
     def invalidate(self, key: str):
@@ -74,14 +82,14 @@ class RedisCache:
             self._client.delete(self._k(key))
         except Exception as e:
             logger.warning(
-                f"Redis DELETE failed for {key} ({e}); a stale value may be served until its TTL expires."
+                "Redis DELETE unavailable (%s); value expires by TTL.", type(e).__name__
             )
 
     def invalidate_prefix(self, prefix: str):
         try:
             pattern = f"{self.key_prefix}{prefix}*"
             cursor = 0
-            while True:
+            for _ in range(100):
                 cursor, keys = self._client.scan(
                     cursor=cursor, match=pattern, count=100
                 )
@@ -89,21 +97,31 @@ class RedisCache:
                     self._client.delete(*keys)
                 if cursor == 0:
                     break
+            else:
+                logger.warning(
+                    "Redis cache invalidation scan bound reached; remaining entries expire by TTL"
+                )
         except Exception as e:
             logger.warning(
-                f"Redis prefix invalidation failed for {prefix} ({e}); stale values may be served until TTL expiry."
+                "Redis cache invalidation unavailable (%s); remaining entries expire by TTL.",
+                type(e).__name__,
             )
 
     def stats(self) -> dict:
         pattern = f"{self.key_prefix}*"
         cursor = 0
         count = 0
-        while True:
+        for _ in range(100):
             cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=100)
             count += len(keys)
             if cursor == 0:
                 break
-        return {"total_entries": count, "live_entries": count, "backend": "redis"}
+        return {
+            "total_entries": count,
+            "live_entries": count,
+            "backend": "redis",
+            "truncated": cursor != 0,
+        }
 
 
 def make_cache(ttl_seconds: float, key_prefix: str):
@@ -122,6 +140,7 @@ def make_cache(ttl_seconds: float, key_prefix: str):
             return cache
         except Exception as e:
             logger.warning(
-                f"CACHE_BACKEND=redis but Redis unavailable ({e}); falling back to in-memory cache."
+                "Redis cache unavailable (%s); using bounded memory cache.",
+                type(e).__name__,
             )
     return TTLCache(ttl_seconds=ttl_seconds)

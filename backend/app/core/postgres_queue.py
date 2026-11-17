@@ -80,6 +80,7 @@ class PostgresEvaluationQueue:
                         "Queue capacity exceeded; no jobs accepted"
                     )
                 ids = []
+                now = processing_time(db)
                 for original in payloads:
                     payload = dict(original)
                     payload.setdefault("request_id", "req_" + uuid.uuid4().hex)
@@ -91,6 +92,8 @@ class PostgresEvaluationQueue:
                             payload=payload,
                             submitted_by=payload.get("_submitted_by", ""),
                             agent_id=payload.get("agent_id", ""),
+                            created_at=now,
+                            updated_at=now,
                         )
                     )
                     ids.append(jid)
@@ -175,6 +178,7 @@ class PostgresEvaluationQueue:
                 )
                 if row is None:
                     return None
+                row.updated_at = now
                 if row.attempts == 0 and now - utc(row.created_at) > timedelta(
                     seconds=integer(
                         "SENTINEL_JOB_MAX_AGE_SECONDS", 300, minimum=30, maximum=3600
@@ -207,8 +211,12 @@ class PostgresEvaluationQueue:
                     EvaluationJob.job_id == jid,
                     EvaluationJob.lease_token == token,
                     EvaluationJob.status == "PROCESSING",
+                    EvaluationJob.lease_expires_at > now,
                 )
-                .values(lease_expires_at=now + timedelta(seconds=self._lease_seconds))
+                .values(
+                    lease_expires_at=now + timedelta(seconds=self._lease_seconds),
+                    updated_at=now,
+                )
             ).rowcount
             db.commit()
             return changed == 1
@@ -222,6 +230,7 @@ class PostgresEvaluationQueue:
                     EvaluationJob.job_id == jid,
                     EvaluationJob.lease_token == token,
                     EvaluationJob.status == "PROCESSING",
+                    EvaluationJob.lease_expires_at > now,
                 )
                 .values(
                     status="QUEUED" if retry else "FAILED" if error else "DONE",
@@ -230,6 +239,7 @@ class PostgresEvaluationQueue:
                     completed_at=None if retry else now,
                     lease_token=None,
                     lease_expires_at=None,
+                    updated_at=now,
                 )
             ).rowcount
             db.commit()

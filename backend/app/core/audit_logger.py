@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_, and_
 from datetime import timedelta
 from app.core.validation import utc_timestamp
+from app.core.intelligence import processing_time
 
 from app.models.db import TransactionRecord, DecisionRecord, PaymentRecord
 from app.models.policy import TransactionRequest, Decision, HistoryItem
@@ -47,6 +48,7 @@ class AuditLogger:
             scenario_tag=scenario_tag,
             submitted_by=actor_id,
             submitted_credential_version=actor_version,
+            created_at=processing_time(self.db),
         )
         self.db.add(record)
         self.db.flush()
@@ -71,6 +73,7 @@ class AuditLogger:
             prompt_hash=decision.prompt_hash,
             llm_mode=decision.llm_mode,
             token_usage=decision.token_usage,
+            created_at=processing_time(self.db),
         )
         self.db.add(record)
         self.db.flush()

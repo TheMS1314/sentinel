@@ -2,7 +2,7 @@
 
 Uses the production renderer and preserves replica placement, probes, security
 contexts, grants and rollout strategy. Explicit CI overrides use locally built
-images, development provider mode and disposable plaintext SQL/Redis. This is
+images, development provider mode and disposable TLS SQL/Redis. This is
 neither a production-profile startup nor a cloud/HA or live-provider proof.
 Run after gateway_acceptance.py in the same isolated cluster.
 """
@@ -95,6 +95,7 @@ def dependency(name, image, uid, port, args, env=None, storage=None):
         volumeMounts=[
             dict(name="tmp", mountPath="/tmp"),
             dict(name="data", mountPath=storage or "/data"),
+            dict(name="server-tls", mountPath="/run/sentinel-tls", readOnly=True),
         ],
     )
     if env:
@@ -105,6 +106,21 @@ def dependency(name, image, uid, port, args, env=None, storage=None):
         container["volumeMounts"].append(
             dict(name="tmp", mountPath="/var/run/postgresql")
         )
+        container["volumeMounts"].append(
+            dict(name="hba", mountPath="/run/sentinel-hba", readOnly=True)
+        )
+    volumes = [
+        dict(name="tmp", emptyDir={}),
+        dict(name="data", emptyDir={}),
+        dict(
+            name="server-tls", secret=dict(secretName=name + "-tls", defaultMode=0o440)
+        ),
+    ]
+    if name == "ci-postgres":
+        volumes[1] = dict(
+            name="data", persistentVolumeClaim=dict(claimName="ci-postgres-data")
+        )
+        volumes.append(dict(name="hba", configMap=dict(name="ci-postgres-hba")))
     return [
         dict(
             apiVersion="apps/v1",
@@ -123,10 +139,7 @@ def dependency(name, image, uid, port, args, env=None, storage=None):
                             seccompProfile=dict(type="RuntimeDefault"),
                         ),
                         containers=[container],
-                        volumes=[
-                            dict(name="tmp", emptyDir={}),
-                            dict(name="data", emptyDir={}),
-                        ],
+                        volumes=volumes,
                     ),
                 ),
             ),
@@ -157,6 +170,72 @@ def put_secret(name, data, kind="Opaque"):
                 stringData=data,
             )
         ).encode(),
+    )
+
+
+def dependency_certificate(name, certs):
+    """Private keys stay under the CI artifact exclusion, never in report JSON."""
+    key, csr, crt, ext = [
+        certs / (name + suffix) for suffix in (".key", ".csr", ".crt", ".ext")
+    ]
+    ext.write_text(
+        "subjectAltName=DNS:"
+        + name
+        + "\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always,issuer\n"
+    )
+    edge.command(
+        [
+            "openssl",
+            "req",
+            "-new",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(csr),
+            "-subj",
+            "/CN=" + name,
+        ]
+    )
+    edge.command(
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-in",
+            str(csr),
+            "-CA",
+            str(certs / "ca.crt"),
+            "-CAkey",
+            str(certs / "ca.key"),
+            "-CAcreateserial",
+            "-out",
+            str(crt),
+            "-days",
+            "1",
+            "-extfile",
+            str(ext),
+        ]
+    )
+    edge.command(
+        [
+            "openssl",
+            "verify",
+            "-x509_strict",
+            "-CAfile",
+            str(certs / "ca.crt"),
+            str(crt),
+        ]
+    )
+    put_secret(
+        name + "-tls",
+        {
+            "server.crt": crt.read_text(),
+            "server.key": key.read_text(),
+            "ca.crt": (certs / "ca.crt").read_text(),
+        },
     )
 
 
@@ -197,14 +276,14 @@ def main():
         overrides=[
             "development provider profile",
             "commit-tagged locally loaded app images",
-            "plaintext disposable SQL/Redis",
+            "disposable SQL PVC and Redis data",
         ],
         not_proven=[
-            "production-profile credentials or dependency TLS",
+            "production-profile credentials and platform certificate lifecycle",
             "network-policy enforcement by kind CNI",
             "cloud/multi-zone HA",
             "real provider contracts",
-            "persistent-volume recovery",
+            "cross-node/zone storage failure and backup disaster recovery",
         ],
         images=images,
     )
@@ -226,8 +305,10 @@ def main():
         "kubernetes.io/tls",
     )
     put_secret("sentinel-db-ca", {"ca.crt": (certs / "ca.crt").read_text()})
-    admin_key, owner_password, runtime_password = [
-        secrets.token_urlsafe(40) for _ in range(3)
+    for name in ("ci-postgres", "ci-redis"):
+        dependency_certificate(name, certs)
+    admin_key, owner_password, runtime_password, redis_password = [
+        secrets.token_urlsafe(40) for _ in range(4)
     ]
     owner_url = "postgresql://sentinel:" + owner_password + "@ci-postgres:5432/sentinel"
     runtime_url = (
@@ -235,6 +316,15 @@ def main():
         + runtime_password
         + "@ci-postgres:5432/sentinel"
     )
+    db_tls = "?sslmode=verify-full&sslrootcert=/run/sentinel-ca/ca.crt"
+    owner_url += db_tls
+    runtime_url += db_tls
+    redis_url = (
+        "rediss://:"
+        + redis_password
+        + "@ci-redis:6379/0?ssl_cert_reqs=required&ssl_check_hostname=true&ssl_ca_certs=/run/sentinel-ca/ca.crt"
+    )
+    put_secret("ci-redis", {"REDIS_PASSWORD": redis_password})
     put_secret(
         "ci-postgres",
         dict(
@@ -255,7 +345,7 @@ def main():
         dict(
             provider_keys,
             SENTINEL_DATABASE_URL=runtime_url,
-            REDIS_URL="redis://ci-redis:6379/0",
+            REDIS_URL=redis_url,
         ),
     )
     put_secret(
@@ -270,12 +360,43 @@ def main():
         ),
     )
     edge.apply(
+        [
+            dict(
+                apiVersion="v1",
+                kind="PersistentVolumeClaim",
+                metadata=dict(name="ci-postgres-data", namespace=NAMESPACE),
+                spec=dict(
+                    accessModes=["ReadWriteOnce"],
+                    resources=dict(requests=dict(storage="1Gi")),
+                ),
+            ),
+            dict(
+                apiVersion="v1",
+                kind="ConfigMap",
+                metadata=dict(name="ci-postgres-hba", namespace=NAMESPACE),
+                data={
+                    "pg_hba.conf": "local all all trust\nhostnossl all all all reject\nhostssl all all all scram-sha-256\n"
+                },
+            ),
+        ]
+    )
+    edge.apply(
         dependency(
             "ci-postgres",
             "postgres:16-alpine",
             70,
             5432,
-            ["postgres"],
+            [
+                "postgres",
+                "-c",
+                "ssl=on",
+                "-c",
+                "ssl_cert_file=/run/sentinel-tls/server.crt",
+                "-c",
+                "ssl_key_file=/run/sentinel-tls/server.key",
+                "-c",
+                "hba_file=/run/sentinel-hba/pg_hba.conf",
+            ],
             "ci-postgres",
             "/var/lib/postgresql/data",
         )
@@ -284,7 +405,28 @@ def main():
             "redis:7-alpine",
             999,
             6379,
-            ["redis-server", "--save", "", "--appendonly", "no"],
+            [
+                "redis-server",
+                "--save",
+                "",
+                "--appendonly",
+                "no",
+                "--port",
+                "0",
+                "--tls-port",
+                "6379",
+                "--tls-cert-file",
+                "/run/sentinel-tls/server.crt",
+                "--tls-key-file",
+                "/run/sentinel-tls/server.key",
+                "--tls-ca-cert-file",
+                "/run/sentinel-tls/ca.crt",
+                "--tls-auth-clients",
+                "no",
+                "--requirepass",
+                "$(REDIS_PASSWORD)",
+            ],
+            "ci-redis",
         )
     )
     for name in ("ci-postgres", "ci-redis"):
@@ -344,6 +486,47 @@ def main():
     check(
         "actual_runtime_grants_and_no_provisioning_secret",
         grants.strip() == b"restricted",
+    )
+    tls_probe = """import os,ssl,json,certifi,redis
+from sqlalchemy import create_engine,text
+from sqlalchemy.engine import make_url
+from app.models.db import engine
+from app.core.settings import validate_production_transport
+from urllib.parse import urlsplit,parse_qsl,urlencode,urlunsplit
+db_url,cache_url=os.environ['SENTINEL_DATABASE_URL'],os.environ['REDIS_URL']
+validate_production_transport(db_url,cache_url)
+with engine.connect() as conn:
+ assert conn.execute(text('SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')).scalar_one() is True
+client=redis.Redis.from_url(cache_url,socket_timeout=2,socket_connect_timeout=2)
+assert client.ping()
+conn=client.connection_pool.get_connection()
+assert isinstance(conn._sock,ssl.SSLSocket) and conn._sock.version()
+client.connection_pool.release(conn);client.close()
+def rejected_pg(options):
+ e=create_engine(make_url(db_url).update_query_dict(options),connect_args={'connect_timeout':2})
+ try:
+  with e.connect(): pass
+ except Exception: return True
+ finally: e.dispose()
+ return False
+assert rejected_pg({'sslmode':'disable'})
+assert rejected_pg({'sslrootcert':certifi.where()})
+parts=urlsplit(cache_url)
+options=dict(parse_qsl(parts.query));options['ssl_ca_certs']=certifi.where()
+wrong_ca=urlunsplit(parts._replace(query=urlencode(options)))
+def rejected_cache(client):
+ try: client.ping()
+ except redis.exceptions.ConnectionError: return True
+ finally: client.close()
+ return False
+assert rejected_cache(redis.Redis.from_url(wrong_ca,socket_timeout=2,socket_connect_timeout=2))
+assert rejected_cache(redis.Redis(host='ci-redis',port=6379,password=parts.password,socket_timeout=2,socket_connect_timeout=2))
+print('verified_tls_and_rejections')
+"""
+    check(
+        "postgres_redis_verified_tls_reject_plaintext_and_untrusted_ca",
+        ns("exec", "deployment/sentinel-api", "--", "python", "-c", tls_probe).strip()
+        == b"verified_tls_and_rejections",
     )
 
     def envoy_service():
@@ -489,6 +672,27 @@ def main():
         )
         check(
             "two_node_rolling_restart_completes", len(ready_pods("sentinel-api")) == 2
+        )
+        old_db = ready_pods("ci-postgres")[0]["metadata"]["uid"]
+        ns(
+            "delete",
+            "pod",
+            ready_pods("ci-postgres")[0]["metadata"]["name"],
+            "--wait=false",
+        )
+        edge.wait_for(
+            lambda: (
+                len(ready_pods("ci-postgres")) == 1
+                and ready_pods("ci-postgres")[0]["metadata"]["uid"] != old_db
+            ),
+            timeout=180,
+        )
+        check(
+            "postgres_pvc_preserves_ledger_after_pod_replacement",
+            edge.wait_for(
+                lambda: http("/api/transactions/evaluate", purchase)[1] == approved[1],
+                timeout=180,
+            ),
         )
         # No new financial request is admitted without the shared quota service.
         ns("scale", "deployment/ci-redis", "--replicas=0")
