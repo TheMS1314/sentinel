@@ -112,7 +112,7 @@ npm run build
 
 Tests default to a disposable SQLite database. Set `SENTINEL_TEST_DATABASE_URL` to a dedicated PostgreSQL database whose name ends in `_test` to exercise cross-connection PostgreSQL locking. Tests never use the application's configured database or provider keys. Redis tests use isolated namespaces.
 
-The GitHub workflow provisions PostgreSQL/Redis services and verifies both fresh and legacy schema migrations. Final [run 44060647427](https://github.com/TheMS1314/sentinel/actions/runs/44060647427) passed **250 backend tests, 17 frontend tests and all 34 container acceptance checks**, frontend lint/build, runtime audits, Kubernetes API schema validation and actual nginx config validation. Tests include dependency outages, replica revocation/recreation, signed HTTPS alerts, restricted DB authority and backup restoration. See [verification status](docs/GAP_REGISTER.md) for executed scope and external release gates.
+The GitHub workflow provisions PostgreSQL/Redis services and verifies fresh and legacy migrations, including populated provider evidence. Latest [run 44091900923](https://github.com/TheMS1314/sentinel/actions/runs/44091900923) passed **269 backend tests, 19 frontend tests and all 39 container acceptance checks**, frontend lint/build, runtime audits, Kubernetes API schema validation and actual nginx config validation. Container checks include outages/recovery, replica revocation, signed HTTPS alerts, restricted DB authority and opted-in scheduling that holds payments when provider credentials are absent. [Current evidence](docs/verification/provider-refresh-ci.json) and [release gates](docs/GAP_REGISTER.md).
 
 ```bash
 PYTHONPATH=backend .venv/bin/python -m app.eval.eval_harness
@@ -156,3 +156,6 @@ More detail: [architecture](docs/ARCHITECTURE.md), [production engineering and o
 ## Gap closure and release status
 
 [The remaining gap register](docs/GAP_REGISTER.md) separates implemented software from external proof. The dashboard now includes Access, Merchants, Operations and Providers, in addition to policy/review/risk controls. Use [incident operations](docs/OPERATIONS.md), [deployment configuration](docs/DEPLOYMENT.md), [commercial adapter contracts](docs/PROVIDER_CONNECTIONS.md), [opt-in integration verification](docs/INTEGRATION_VERIFICATION.md) and [independent feedback evaluation](docs/FEEDBACK_EVALUATION.md) for the current implementation. Main remains unmerged; no live-money or production launch claim is made.
+
+
+Provider refresh can now be explicitly scheduled with durable leases, crash recovery and response fencing. Mapping review is bound to merchant identity versions; an identity edit cannot silently reattest its old provider mapping. Scheduling is disabled by default and requires both deployment and per-binding opt-in. Evaluation/contract reports are saved atomically with private permissions from creation. See [provider controls](docs/PROVIDER_CONNECTIONS.md).

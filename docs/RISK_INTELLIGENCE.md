@@ -77,7 +77,7 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 
 ## Executed verification
 
-Final [run 44060647427](https://github.com/TheMS1314/sentinel/actions/runs/44060647427) passed **250 backend tests, 17 frontend tests and 34 container checks**, lint/build/runtime audits and deployment schema/config checks. Real Compose checks included owner-scoped merchant IDs, replica credential revocation, signed HTTPS alerts, restricted runtime DB grants, dependency outages and logical restoration. [Current evidence](verification/gap-closure-ci.json) keeps mock/contract/deployment scopes separate. Licensed commercial integrations remain unverified.
+Latest [run 44091900923](https://github.com/TheMS1314/sentinel/actions/runs/44091900923) passed **269 backend tests, 19 frontend tests and 39 container checks**, runtime audits, Kubernetes schema dry run and nginx config validation. Checks include stable merchant IDs, shared revocation, signed alerts, restricted DB grants and opt-in enrichment scheduling with explicit missing-credential HOLD. [Current evidence](verification/provider-refresh-ci.json) separates these checks from licensed/live integration proof, which remains unavailable.
 
 ## Commercial integration path
 
