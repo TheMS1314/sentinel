@@ -127,13 +127,13 @@ jobs:
           config = next(r for r in resources if r['kind']=='ConfigMap' and r['metadata']['name']=='sentinel-gateway-config')
           Path('artifacts/k8s-nginx.conf').write_text(config['data']['nginx.conf'])
           PYCODE
-          docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --add-host sentinel-api:127.0.0.1 --add-host sentinel-frontend:127.0.0.1 -v "$PWD/artifacts/k8s-nginx.conf:/etc/nginx/nginx.conf:ro" nginxinc/nginx-unprivileged:alpine nginx -t
+          docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --add-host sentinel-api:127.0.0.1 --add-host sentinel-frontend:127.0.0.1 -v "$PWD/artifacts/k8s-nginx.conf:/etc/nginx/nginx.conf:ro" nginx/nginx-unprivileged:alpine nginx -t
           kubectl create namespace sentinel
           kubectl apply --dry-run=server -f artifacts/deployment.yaml
           python - <<'PYCODE'
           import os
           import subprocess
-          image = subprocess.check_output(['docker','image','inspect','nginxinc/nginx-unprivileged:alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
+          image = subprocess.check_output(['docker','image','inspect','nginx/nginx-unprivileged:alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
           with open(os.environ['GITHUB_ENV'],'a') as handle:
               handle.write('SENTINEL_GATEWAY_FIXTURE_IMAGE='+image+'\n')
           PYCODE
@@ -145,6 +145,9 @@ jobs:
           kubectl --context kind-sentinel-gateway get pods -A -o wide > artifacts/gateway-pods.txt || true
           kubectl --context kind-sentinel-gateway -n sentinel-ci-routing get gateway,httproute -o yaml > artifacts/gateway-status.yaml || true
           kubectl --context kind-sentinel-gateway -n envoy-gateway-system logs deployment/envoy-gateway --tail=100 > artifacts/gateway-controller.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-routing get pods -o wide || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-routing logs deployment/sentinel-gateway --tail=25 || true
+          cat artifacts/gateway-forward.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

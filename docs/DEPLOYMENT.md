@@ -57,3 +57,5 @@ Primary references:
 - https://kubernetes.io/blog/2026/01/29/ingress-nginx-statement/
 - https://gateway.envoyproxy.io/docs/tasks/quickstart/
 - https://gateway.envoyproxy.io/news/releases/matrix/
+
+The nginx application/fixture image references use the current upstream nginx/nginx-unprivileged Docker Hub namespace. The project documents nginxinc as the legacy namespace for older releases: https://github.com/nginx/docker-nginx-unprivileged/blob/main/README.md . The CI fixture records its resolved image digest. Test certificates include explicit CA/server constraints and key identifiers and pass strict OpenSSL verification before installation; certificate verification is never disabled to make the routing test pass.

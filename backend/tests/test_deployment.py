@@ -69,16 +69,34 @@ def test_manifest_separates_secrets_pins_images_and_survives_one_pod_disruption(
     assert {"secretRef": {"name": "sentinel-migration"}} in job["spec"]["template"][
         "spec"
     ]["containers"][0]["envFrom"]
-    edge=next(x for x in items if x['kind']=='Gateway')
-    assert edge['spec']['gatewayClassName']=='sentinel'
-    assert edge['spec']['listeners'][1]['tls']['certificateRefs']==[{'group':'','kind':'Secret','name':'sentinel-tls'}]
-    assert all(l['allowedRoutes']['namespaces']['from']=='Same' for l in edge['spec']['listeners'])
-    assert not any(x['kind'] in ('Ingress','GatewayClass') for x in items)
-    redirect=next(x for x in items if x['kind']=='HTTPRoute' and x['metadata']['name']=='sentinel-http-redirect')
-    assert redirect['spec']['rules'][0]['filters'][0]['requestRedirect']=={'scheme':'https','port':443,'statusCode':301}
-    secure=next(x for x in items if x['kind']=='HTTPRoute' and x['metadata']['name']=='sentinel-https')
-    assert secure['spec']['hostnames']==['sentinel.example']
-    assert secure['spec']['parentRefs'][0]['sectionName']=='https'
+    edge = next(x for x in items if x["kind"] == "Gateway")
+    assert edge["spec"]["gatewayClassName"] == "sentinel"
+    assert edge["spec"]["listeners"][1]["tls"]["certificateRefs"] == [
+        {"group": "", "kind": "Secret", "name": "sentinel-tls"}
+    ]
+    assert all(
+        l["allowedRoutes"]["namespaces"]["from"] == "Same"
+        for l in edge["spec"]["listeners"]
+    )
+    assert not any(x["kind"] in ("Ingress", "GatewayClass") for x in items)
+    redirect = next(
+        x
+        for x in items
+        if x["kind"] == "HTTPRoute"
+        and x["metadata"]["name"] == "sentinel-http-redirect"
+    )
+    assert redirect["spec"]["rules"][0]["filters"][0]["requestRedirect"] == {
+        "scheme": "https",
+        "port": 443,
+        "statusCode": 301,
+    }
+    secure = next(
+        x
+        for x in items
+        if x["kind"] == "HTTPRoute" and x["metadata"]["name"] == "sentinel-https"
+    )
+    assert secure["spec"]["hostnames"] == ["sentinel.example"]
+    assert secure["spec"]["parentRefs"][0]["sectionName"] == "https"
     with pytest.raises(ValueError):
         module.render(
             "sentinel.example",
@@ -101,14 +119,37 @@ def test_production_transports_reject_unencrypted_or_unverified_dependencies():
             validate_production_transport(db, redis)
 
 
-@pytest.mark.parametrize('host',['a..example','-a.example','a-.example','a.'+'b'*64+'.example','127.0.0.1','https://site.example'])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "a..example",
+        "-a.example",
+        "a-.example",
+        "a." + "b" * 64 + ".example",
+        "127.0.0.1",
+        "https://site.example",
+    ],
+)
 def test_invalid_gateway_host_is_rejected_before_rendering(host):
-    with pytest.raises(ValueError):module.render(host,dict.fromkeys(('backend','frontend','gateway'),'registry/app@sha256:'+'a'*64))
+    with pytest.raises(ValueError):
+        module.render(
+            host,
+            dict.fromkeys(
+                ("backend", "frontend", "gateway"), "registry/app@sha256:" + "a" * 64
+            ),
+        )
 
 
 def test_custom_gateway_class_is_explicit_and_namespace_must_be_valid():
-    images=dict.fromkeys(('backend','frontend','gateway'),'registry/app@sha256:'+'a'*64)
-    items=module.render('app.example',images,gateway_class='platform-gateway')
-    assert next(x for x in items if x['kind']=='Gateway')['spec']['gatewayClassName']=='platform-gateway'
-    with pytest.raises(ValueError):module.render('app.example',images,namespace='invalid-')
-    with pytest.raises(ValueError):module.render('app.example',images,gateway_class='../../other')
+    images = dict.fromkeys(
+        ("backend", "frontend", "gateway"), "registry/app@sha256:" + "a" * 64
+    )
+    items = module.render("app.example", images, gateway_class="platform-gateway")
+    assert (
+        next(x for x in items if x["kind"] == "Gateway")["spec"]["gatewayClassName"]
+        == "platform-gateway"
+    )
+    with pytest.raises(ValueError):
+        module.render("app.example", images, namespace="invalid-")
+    with pytest.raises(ValueError):
+        module.render("app.example", images, gateway_class="../../other")

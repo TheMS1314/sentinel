@@ -7,27 +7,35 @@ import re
 
 
 def dns_name(value, max_length=253):
-    return isinstance(value,str) and 1<=len(value)<=max_length and all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',part) for part in value.split('.'))
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= max_length
+        and all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+            for part in value.split(".")
+        )
+    )
 
 
 def render(host, images, namespace="sentinel", gateway_class="sentinel"):
     import ipaddress
-    if not dns_name(host) or '.' not in host:
-        raise ValueError('An explicit valid DNS hostname is required')
+
+    if not dns_name(host) or "." not in host:
+        raise ValueError("An explicit valid DNS hostname is required")
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
-        raise ValueError('Use a DNS hostname rather than an IP address')
-    if set(images)!={'backend','frontend','gateway'}:
-        raise ValueError('Backend, frontend and gateway images are required')
+        raise ValueError("Use a DNS hostname rather than an IP address")
+    if set(images) != {"backend", "frontend", "gateway"}:
+        raise ValueError("Backend, frontend and gateway images are required")
     if not dns_name(gateway_class):
-        raise ValueError('Invalid GatewayClass name')
+        raise ValueError("Invalid GatewayClass name")
     for image in images.values():
         if not re.fullmatch(r"[A-Za-z0-9_./:-]+@sha256:[a-f0-9]{64}", image):
             raise ValueError("All deployment images must be pinned by SHA256 digest")
-    if not dns_name(namespace,63) or "." in namespace:
+    if not dns_name(namespace, 63) or "." in namespace:
         raise ValueError("Invalid namespace")
 
     def resource(kind, name, version="v1", **body):
@@ -260,27 +268,94 @@ http {
     )
     # The platform owns the GatewayClass/controller. Application bundles never
     # install a retired controller or take over that cluster-scoped responsibility.
-    items.append(resource('Gateway','sentinel-edge','gateway.networking.k8s.io/v1',spec={
-        'gatewayClassName':gateway_class,
-        'listeners':[
-            {'name':'http','hostname':host,'port':80,'protocol':'HTTP','allowedRoutes':{'namespaces':{'from':'Same'}}},
-            {'name':'https','hostname':host,'port':443,'protocol':'HTTPS','tls':{'mode':'Terminate','certificateRefs':[{'group':'','kind':'Secret','name':'sentinel-tls'}]},'allowedRoutes':{'namespaces':{'from':'Same'}}},
-        ],
-    }))
-    items.append(resource('HTTPRoute','sentinel-http-redirect','gateway.networking.k8s.io/v1',spec={
-        'parentRefs':[{'name':'sentinel-edge','sectionName':'http'}],
-        'hostnames':[host],
-        'rules':[{'filters':[{'type':'RequestRedirect','requestRedirect':{'scheme':'https','port':443,'statusCode':301}}]}],
-    }))
-    items.append(resource('HTTPRoute','sentinel-https','gateway.networking.k8s.io/v1',spec={
-        'parentRefs':[{'name':'sentinel-edge','sectionName':'https'}],
-        'hostnames':[host],
-        'rules':[{'matches':[{'path':{'type':'PathPrefix','value':'/'}}],
-            'filters':[{'type':'ResponseHeaderModifier','responseHeaderModifier':{'set':[{'name':'Strict-Transport-Security','value':'max-age=31536000'}]}}],
-            'timeouts':{'request':'60s','backendRequest':'55s'},
-            'backendRefs':[{'name':'sentinel-gateway','port':8080}],
-        }],
-    }))
+    items.append(
+        resource(
+            "Gateway",
+            "sentinel-edge",
+            "gateway.networking.k8s.io/v1",
+            spec={
+                "gatewayClassName": gateway_class,
+                "listeners": [
+                    {
+                        "name": "http",
+                        "hostname": host,
+                        "port": 80,
+                        "protocol": "HTTP",
+                        "allowedRoutes": {"namespaces": {"from": "Same"}},
+                    },
+                    {
+                        "name": "https",
+                        "hostname": host,
+                        "port": 443,
+                        "protocol": "HTTPS",
+                        "tls": {
+                            "mode": "Terminate",
+                            "certificateRefs": [
+                                {"group": "", "kind": "Secret", "name": "sentinel-tls"}
+                            ],
+                        },
+                        "allowedRoutes": {"namespaces": {"from": "Same"}},
+                    },
+                ],
+            },
+        )
+    )
+    items.append(
+        resource(
+            "HTTPRoute",
+            "sentinel-http-redirect",
+            "gateway.networking.k8s.io/v1",
+            spec={
+                "parentRefs": [{"name": "sentinel-edge", "sectionName": "http"}],
+                "hostnames": [host],
+                "rules": [
+                    {
+                        "filters": [
+                            {
+                                "type": "RequestRedirect",
+                                "requestRedirect": {
+                                    "scheme": "https",
+                                    "port": 443,
+                                    "statusCode": 301,
+                                },
+                            }
+                        ]
+                    }
+                ],
+            },
+        )
+    )
+    items.append(
+        resource(
+            "HTTPRoute",
+            "sentinel-https",
+            "gateway.networking.k8s.io/v1",
+            spec={
+                "parentRefs": [{"name": "sentinel-edge", "sectionName": "https"}],
+                "hostnames": [host],
+                "rules": [
+                    {
+                        "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
+                        "filters": [
+                            {
+                                "type": "ResponseHeaderModifier",
+                                "responseHeaderModifier": {
+                                    "set": [
+                                        {
+                                            "name": "Strict-Transport-Security",
+                                            "value": "max-age=31536000",
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                        "timeouts": {"request": "60s", "backendRequest": "55s"},
+                        "backendRefs": [{"name": "sentinel-gateway", "port": 8080}],
+                    }
+                ],
+            },
+        )
+    )
     items.append(
         resource(
             "NetworkPolicy",
@@ -311,7 +386,11 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--host", required=True)
     p.add_argument("--namespace", default="sentinel")
-    p.add_argument("--gateway-class", default="sentinel", help="Existing platform-managed GatewayClass")
+    p.add_argument(
+        "--gateway-class",
+        default="sentinel",
+        help="Existing platform-managed GatewayClass",
+    )
     for name in ("backend", "frontend", "gateway"):
         p.add_argument("--" + name + "-image", required=True)
     p.add_argument("--output", required=True)
