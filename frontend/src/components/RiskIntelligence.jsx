@@ -110,7 +110,7 @@ export default function RiskIntelligence() {
   }
   return <section className="flex flex-col gap-5">
     <div><h2 className="font-semibold text-text">Risk intelligence</h2>
-      <p className="text-sm text-textmuted">Local evidence and Sentinel controls. Mastercard Decision Intelligence, Recorded Future and RiskRecon are not connected. Missing evidence is unknown, not a safe rating. Merchant/domain bindings are operator assertions.</p></div>
+      <p className="text-sm text-textmuted">Local evidence and Sentinel controls. Commercial connection status and refresh controls are in Providers. Mastercard Decision Intelligence remains disconnected. Missing evidence is unknown, not a safe rating. Merchant/domain bindings are operator assertions.</p></div>
     {error && <p role="alert" className="text-block">{error} Use Refresh after a configuration conflict.</p>}
     {notice && <p role="status" className="text-approve">{notice}</p>}
     <button className="rounded-lg border border-accent/40 bg-accent/15 px-4 py-2 text-sm text-accent disabled:opacity-50 self-start" disabled={busy} onClick={refresh}>Refresh risk controls</button>

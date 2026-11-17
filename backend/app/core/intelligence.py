@@ -289,6 +289,15 @@ def dispatch_authority(db, request_id):
     )
     from app.models.db import DecisionRecord, PaymentRecord, ServiceCredential
 
+    from app.core.providers import assessment
+    from app.models.db import MerchantIdentity
+
+    bound_tx = db.query(TransactionRecord).filter_by(request_id=request_id).one()
+    merchant = (
+        db.get(MerchantIdentity, bound_tx.merchant_id) if bound_tx.merchant_id else None
+    )
+    if any(r["hold"] for r in assessment(db, merchant)):
+        return "Provider evidence is not current and acceptable for dispatch"
     tx, decision = (
         db.query(TransactionRecord, DecisionRecord)
         .join(DecisionRecord, DecisionRecord.request_id == TransactionRecord.request_id)
@@ -351,6 +360,18 @@ def assess(db, policy, request):
         db.get(MerchantIdentity, request.merchant_id) if request.merchant_id else None
     )
     report = _assess_profiles(db, policy, request)
+    from app.core.providers import assessment
+
+    from app.core.providers import configuration
+
+    report["providers"].update(configuration())
+    report["provider_evidence"] = assessment(db, identity)
+    if any(r["hold"] for r in report["provider_evidence"]):
+        if report["recommendation"] != "BLOCK":
+            report["recommendation"] = "HOLD"
+        report["signals"].append(
+            "Required/bound provider evidence is missing, stale, invalid or elevated; refresh and review"
+        )
     if not identity or identity.owner_id != policy.owner_human_id:
         return report
     now = processing_time(db)

@@ -11,7 +11,7 @@ it('labels commercial providers as disconnected and local evidence as uncertain'
   api.riskOverview.mockResolvedValue(overview());
   render(<RiskIntelligence/>);
   await screen.findByText('Emergency payment guard');
-  expect(screen.getByText(/Mastercard Decision Intelligence, Recorded Future and RiskRecon are not connected/)).toBeTruthy();
+  expect(screen.getByText(/Mastercard Decision Intelligence remains disconnected/)).toBeTruthy();
   expect(screen.getByText(/Missing evidence is unknown/)).toBeTruthy();
   expect(screen.getByLabelText('Profile source').value).toBe('synthetic');
 });

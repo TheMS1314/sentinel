@@ -384,6 +384,8 @@ while time.monotonic() < end:
     if delivered:
         break
     time.sleep(1)
+if not delivered:
+    print("ALERT_DIAGNOSTICS", json.dumps(http("/api/ops/alerts")[1]), flush=True)
 check("signed_https_alert_delivered", bool(delivered))
 sink = compose(
     "exec",

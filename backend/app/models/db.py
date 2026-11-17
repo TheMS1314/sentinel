@@ -353,3 +353,37 @@ class AlertDelivery(Base):
     last_error = Column(String, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=now_utc)
+
+
+class ProviderBinding(Base):
+    __tablename__ = "provider_bindings"
+    __table_args__ = (
+        UniqueConstraint("merchant_id", "provider", name="uq_provider_merchant"),
+    )
+    binding_id = Column(String, primary_key=True)
+    merchant_id = Column(
+        String, ForeignKey("merchant_identities.merchant_id"), nullable=False
+    )
+    provider = Column(String, nullable=False)
+    external_id = Column(String, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=now_utc)
+
+
+class ProviderEvidence(Base):
+    __tablename__ = "provider_evidence"
+    __table_args__ = (Index("ix_provider_evidence_lookup", "binding_id", "fetched_at"),)
+    evidence_id = Column(String, primary_key=True)
+    binding_id = Column(
+        String, ForeignKey("provider_bindings.binding_id"), nullable=False
+    )
+    binding_version = Column(Integer, nullable=False)
+    merchant_version = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    score = Column(Float, nullable=True)
+    observed_at = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, nullable=False, default=now_utc)
+    expires_at = Column(DateTime, nullable=False)
+    response_hash = Column(String, nullable=True)
+    error = Column(String, nullable=True)

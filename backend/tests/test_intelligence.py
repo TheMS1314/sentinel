@@ -177,7 +177,8 @@ def test_unmapped_identity_is_unknown_and_cannot_bypass_policy(db):
     result = assess(db, p, request(p))
     assert result["vendor"]["score"] is None
     assert result["coverage"] == "merchant_identity_unmapped"
-    assert all(v == "not_connected" for v in result["providers"].values())
+    assert result["providers"]["mastercard_decision_intelligence"] == "not_connected"
+    assert result["providers"]["recorded_future"] == "not_configured"
     assert (
         SentinelOrchestrator(db)
         .evaluate_transaction(p, request(p, amount=99999))

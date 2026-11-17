@@ -1198,6 +1198,9 @@ app.include_router(merchant_router)
 from app.api.operations import router as operations_router
 
 app.include_router(operations_router)
+from app.api.providers import router as providers_router
+
+app.include_router(providers_router)
 
 
 @app.get(

@@ -56,6 +56,9 @@ function qs(params) {
 export const api = {
   listMerchants: () => request("/merchants"),
   saveMerchant: (body) => request("/merchants", {method:"POST",body:JSON.stringify(body)}),
+  providers: () => request('/providers'),
+  bindProvider: body => request('/providers/bindings',{method:'POST',body:JSON.stringify(body)}),
+  refreshProvider: id => request(`/providers/bindings/${id}/refresh`,{method:'POST'}),
   opsSummary: () => request('/ops/summary'),
   opsIncidents: () => request('/ops/incidents'),
   opsAlerts: () => request('/ops/alerts'),

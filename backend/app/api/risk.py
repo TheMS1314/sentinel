@@ -50,12 +50,13 @@ def overview(
 ):
     principal.require("admin")
     now = processing_time(db)
+    from app.core.providers import configuration
+
     return {
         "mode": "local_evidence",
         "providers": {
             "mastercard_decision_intelligence": "not_connected",
-            "recorded_future": "not_connected",
-            "riskrecon": "not_connected",
+            **configuration(),
         },
         "guard": guard_view(db.get(DispatchGuard, 1)),
         "pending_payments": db.query(PaymentRecord).filter_by(state="pending").count(),
