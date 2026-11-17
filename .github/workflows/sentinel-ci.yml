@@ -34,7 +34,7 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: python -m pip check
       - run: python -m ruff check --select F backend scripts deploy
-      - run: python -m ruff format --check backend scripts deploy
+      - run: python -m ruff format --check --diff backend scripts deploy
       - run: python -m pip_audit -r backend/requirements.txt --no-deps --disable-pip --progress-spinner off
       - run: python -m pytest backend/tests -q --timeout=45 --junitxml=artifacts/backend.xml
       - uses: actions/upload-artifact@v4
@@ -98,22 +98,28 @@ jobs:
       - run: docker compose down --volumes --remove-orphans
         if: always()
 
-  deployment-schema:
+  deployment-gateway:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
+    env:
+      SENTINEL_GATEWAY_ACCEPTANCE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
           go-version: stable
       - run: go install sigs.k8s.io/kind@v0.33.0
-      - run: kind create cluster --name sentinel-schema --wait 60s
+      - run: kind create cluster --name sentinel-gateway --wait 60s
+      - run: helm version --short
+      - run: helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.10.0 -n envoy-gateway-system --create-namespace --wait --timeout 180s
       - run: |
           mkdir -p artifacts
           python deploy/kubernetes/render.py --host sentinel.invalid --backend-image registry.invalid/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --frontend-image registry.invalid/frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --gateway-image registry.invalid/gateway@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --output artifacts/deployment.yaml
           python - <<'PYCODE'
           import importlib.util
+          import os
           from pathlib import Path
+          import subprocess
           spec = importlib.util.spec_from_file_location('render', 'deploy/kubernetes/render.py')
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
@@ -124,9 +130,27 @@ jobs:
           docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --add-host sentinel-api:127.0.0.1 --add-host sentinel-frontend:127.0.0.1 -v "$PWD/artifacts/k8s-nginx.conf:/etc/nginx/nginx.conf:ro" nginxinc/nginx-unprivileged:alpine nginx -t
           kubectl create namespace sentinel
           kubectl apply --dry-run=server -f artifacts/deployment.yaml
+          python - <<'PYCODE'
+          import os
+          import subprocess
+          image = subprocess.check_output(['docker','image','inspect','nginxinc/nginx-unprivileged:alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
+          with open(os.environ['GITHUB_ENV'],'a') as handle:
+              handle.write('SENTINEL_GATEWAY_FIXTURE_IMAGE='+image+'\n')
+          PYCODE
+      - run: python scripts/gateway_acceptance.py
+      - name: Capture gateway diagnostics
+        if: always()
+        run: |
+          mkdir -p artifacts
+          kubectl --context kind-sentinel-gateway get pods -A -o wide > artifacts/gateway-pods.txt || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-routing get gateway,httproute -o yaml > artifacts/gateway-status.yaml || true
+          kubectl --context kind-sentinel-gateway -n envoy-gateway-system logs deployment/envoy-gateway --tail=100 > artifacts/gateway-controller.log || true
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: deployment-schema
-          path: artifacts/deployment.yaml
-      - run: kind delete cluster --name sentinel-schema
+          name: deployment-gateway
+          path: |
+            artifacts/
+            !artifacts/gateway-certs/**
+      - run: kind delete cluster --name sentinel-gateway
         if: always()
