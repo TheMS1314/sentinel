@@ -23,6 +23,7 @@ from app.models.db import (
     PaymentRecord,
     EvaluationJob,
     TransactionRecord,
+    ProviderBinding,
 )
 
 router = APIRouter(
@@ -235,6 +236,22 @@ def prometheus(
                 "failed",
                 "expired",
                 "cancelled",
+            ),
+        ),
+        (
+            "sentinel_provider_refresh_attempts",
+            ProviderBinding,
+            ProviderBinding.refresh_status,
+            (
+                "never",
+                "pending",
+                "processing",
+                "current",
+                "stale",
+                "error",
+                "not_configured",
+                "binding_changed",
+                "discarded",
             ),
         ),
         (

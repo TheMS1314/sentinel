@@ -152,3 +152,54 @@ def test_upgrades_already_hardened_schema(migration_database):
             ).scalar_one()
             == SCHEMA_REVISION
         )
+
+
+def test_upgrade_preserves_existing_provider_evidence_and_keeps_refresh_opt_in(
+    migration_database,
+):
+    url, engine = migration_database
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "0007_provider_evidence",
+        ],
+        env=dict(os.environ, SENTINEL_DATABASE_URL=url),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with engine.begin() as c:
+        c.execute(
+            sa.text(
+                "INSERT INTO merchant_identities(merchant_id,owner_id,legal_name,category,domain,operator_reference,active,version,approved_by,updated_at) VALUES ('m','o','Shop','grocery','shop.example','operator',true,1,'admin',CURRENT_TIMESTAMP)"
+            )
+        )
+        c.execute(
+            sa.text(
+                "INSERT INTO provider_bindings(binding_id,merchant_id,provider,external_id,version,updated_by,updated_at) VALUES ('b','m','recorded_future','idn:shop.example',1,'admin',CURRENT_TIMESTAMP)"
+            )
+        )
+        c.execute(
+            sa.text(
+                "INSERT INTO provider_evidence(evidence_id,binding_id,binding_version,merchant_version,status,score,observed_at,fetched_at,expires_at,response_hash) VALUES ('e','b',1,1,'current',80,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'retained-hash')"
+            )
+        )
+    upgrade(url)
+    with engine.connect() as c:
+        row = c.execute(
+            sa.text(
+                "SELECT auto_refresh,refresh_generation,refresh_token,merchant_version FROM provider_bindings"
+            )
+        ).one()
+        assert not row[0] and row[1] == 0 and row[2] is None and row[3] == 0
+        evidence = c.execute(
+            sa.text(
+                "SELECT evidence_id,score,response_hash,refresh_generation FROM provider_evidence"
+            )
+        ).one()
+        assert evidence == ("e", 80, "retained-hash", 0)

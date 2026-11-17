@@ -410,6 +410,66 @@ sink = compose(
 )
 check("https_sink_received_unique_event", json.loads(sink)["unique_events"] > 0)
 check("protected_operational_metrics", http("/api/ops/metrics")[0] == 200)
+# The actual background worker persists a missing-credential result, never a
+# fabricated clean rating. Two replicas share one leased binding and schedule.
+merchant = http(
+    "/api/merchants",
+    dict(
+        owner_id="ci-owner",
+        legal_name="ScheduledShop",
+        category="grocery",
+        domain="scheduled.example",
+        operator_reference="Synthetic scheduler acceptance",
+        expected_version=0,
+    ),
+)
+check("scheduled_provider_merchant", merchant[0] == 200)
+mid = merchant[1]["merchant_id"]
+bound = http(
+    "/api/providers/bindings",
+    dict(
+        merchant_id=mid,
+        provider="recorded_future",
+        external_id="idn:scheduled.example",
+        auto_refresh=True,
+        refresh_interval_seconds=600,
+        expected_version=0,
+    ),
+)
+check("scheduled_provider_binding", bound[0] == 200)
+bid = bound[1]["binding_id"]
+end = time.monotonic() + 20
+state = None
+while time.monotonic() < end:
+    state = next(
+        (b for b in http("/api/providers")[1]["bindings"] if b["binding_id"] == bid),
+        None,
+    )
+    if state and state["refresh_status"] == "not_configured":
+        break
+    time.sleep(1)
+check(
+    "scheduled_provider_missing_key_is_explicit",
+    state is not None
+    and state["refresh_status"] == "not_configured"
+    and not state["refresh_in_progress"],
+)
+check(
+    "scheduled_provider_absence_holds_payment",
+    http("/api/transactions/evaluate", dict(purchase(), merchant_id=mid))[1]["verdict"]
+    == "HOLD",
+)
+# Verify a single evidence append despite both workers polling the same binding.
+count = compose(
+    "exec",
+    "-T",
+    "backend1",
+    "python",
+    "-c",
+    "import sys;from app.models.db import SessionLocal,ProviderEvidence;db=SessionLocal();print(db.query(ProviderEvidence).filter_by(binding_id=sys.argv[1]).count());db.close()",
+    bid,
+)
+check("scheduled_provider_replica_claim_is_unique", int(count.decode().strip()) == 1)
 report["images"] = compose("images", "--format", "json").decode()
 artifacts = ROOT / "artifacts"
 artifacts.mkdir(exist_ok=True)

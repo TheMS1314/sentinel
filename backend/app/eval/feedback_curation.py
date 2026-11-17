@@ -241,10 +241,9 @@ def validate_reports(calibration, test):
 
 
 def write_private(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-    path.chmod(0o600)
+    from app.core.private_artifacts import write_private_json
+
+    write_private_json(path, value)
 
 
 def main():

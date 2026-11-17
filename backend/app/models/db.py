@@ -324,6 +324,9 @@ class MerchantIdentity(Base):
 
 class Incident(Base):
     __tablename__ = "incidents"
+    __table_args__ = (
+        Index("ix_incident_monitor_scan", "condition_active", "last_checked_at"),
+    )
     incident_id = Column(String, primary_key=True)
     fingerprint = Column(String, unique=True, nullable=False, index=True)
     kind = Column(String, nullable=False)
@@ -335,6 +338,7 @@ class Incident(Base):
     version = Column(Integer, nullable=False, default=1)
     assigned_to = Column(String, nullable=True)
     last_reason = Column(Text, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
     first_seen = Column(DateTime, nullable=False, default=now_utc)
     last_seen = Column(DateTime, nullable=False, default=now_utc)
 
@@ -359,25 +363,52 @@ class ProviderBinding(Base):
     __tablename__ = "provider_bindings"
     __table_args__ = (
         UniqueConstraint("merchant_id", "provider", name="uq_provider_merchant"),
+        Index("ix_provider_refresh_due", "auto_refresh", "refresh_next_at"),
     )
     binding_id = Column(String, primary_key=True)
     merchant_id = Column(
         String, ForeignKey("merchant_identities.merchant_id"), nullable=False
     )
+    merchant_version = Column(Integer, nullable=False, default=0)
     provider = Column(String, nullable=False)
     external_id = Column(String, nullable=False)
     version = Column(Integer, nullable=False, default=1)
     updated_by = Column(String, nullable=False)
     updated_at = Column(DateTime, nullable=False, default=now_utc)
 
+    auto_refresh = Column(Boolean, nullable=False, default=False)
+    refresh_interval_seconds = Column(Integer, nullable=False, default=300)
+    refresh_next_at = Column(DateTime, nullable=False, default=now_utc)
+    refresh_generation = Column(Integer, nullable=False, default=0)
+    refresh_token = Column(String, nullable=True)
+    refresh_lease_expires_at = Column(DateTime, nullable=True)
+    refresh_status = Column(String, nullable=False, default="never")
+    refresh_error = Column(String, nullable=True)
+
 
 class ProviderEvidence(Base):
     __tablename__ = "provider_evidence"
-    __table_args__ = (Index("ix_provider_evidence_lookup", "binding_id", "fetched_at"),)
+    __table_args__ = (
+        Index(
+            "ix_provider_evidence_generation",
+            "binding_id",
+            "refresh_generation",
+            "fetched_at",
+        ),
+        Index("ix_provider_evidence_lookup", "binding_id", "fetched_at"),
+        Index(
+            "ix_provider_source_watermark",
+            "binding_id",
+            "binding_version",
+            "merchant_version",
+            "observed_at",
+        ),
+    )
     evidence_id = Column(String, primary_key=True)
     binding_id = Column(
         String, ForeignKey("provider_bindings.binding_id"), nullable=False
     )
+    refresh_generation = Column(Integer, nullable=False, default=0)
     binding_version = Column(Integer, nullable=False)
     merchant_version = Column(Integer, nullable=False)
     status = Column(String, nullable=False)

@@ -161,9 +161,9 @@ def main():
         scope="transport/schema contracts only; not accuracy, settlement or launch approval",
     )
     path = Path(args.output)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2) + "\n")
-    path.chmod(0o600)
+    from app.core.private_artifacts import write_private_json
+
+    write_private_json(path, report)
     print(json.dumps({r["target"]: r["status"] for r in results}))
     return 0 if all(r["status"] == "verified" for r in results) else 2
 

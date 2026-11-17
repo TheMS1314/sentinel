@@ -19,6 +19,8 @@ services:
       SENTINEL_ALERT_SIGNING_SECRET: ci-synthetic-alert-signing-secret-32plus
       SENTINEL_ALERT_CA_BUNDLE: /certs/server.crt
       SENTINEL_MONITOR_INTERVAL_SECONDS: '1'
+      SENTINEL_PROVIDER_REFRESH_ENABLED: '1'
+      SENTINEL_PROVIDER_POLL_SECONDS: '1'
     volumes:
       - ./artifacts/alert-certs/server.crt:/certs/server.crt:ro
   backend2:

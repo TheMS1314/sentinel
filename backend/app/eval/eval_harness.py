@@ -353,7 +353,7 @@ if __name__ == "__main__":
         if args.output
         else Path(__file__).resolve().parents[2] / "data" / default_name
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=2) + "\n")
-    out_path.chmod(0o600)
+    from app.core.private_artifacts import write_private_json
+
+    write_private_json(out_path, report)
     print("Full report saved to " + str(out_path))

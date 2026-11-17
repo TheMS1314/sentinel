@@ -18,6 +18,9 @@ from app.models.db import (
     PaymentRecord,
     EvaluationJob,
     DecisionRecord,
+    ProviderBinding,
+    ProviderEvidence,
+    MerchantIdentity,
 )
 
 MONITOR_LOCK = "__sentinel_operations_v1__"
@@ -107,7 +110,43 @@ def open_incident(db, kind, entity, severity, summary):
     return row
 
 
-def detect(db, quota_ok=True):
+def provider_condition(db, binding, now):
+    from app.core.provider_refresh import scheduler_enabled
+
+    if not binding.auto_refresh:
+        return None
+    merchant = db.get(MerchantIdentity, binding.merchant_id)
+    if merchant is None or not merchant.active:
+        return None
+    if binding.merchant_version != merchant.version:
+        return "binding_changed"
+    if not scheduler_enabled():
+        return "worker_disabled"
+    evidence = (
+        db.query(ProviderEvidence)
+        .filter_by(binding_id=binding.binding_id)
+        .order_by(
+            ProviderEvidence.refresh_generation.desc(),
+            ProviderEvidence.fetched_at.desc(),
+            ProviderEvidence.evidence_id.desc(),
+        )
+        .first()
+    )
+    if evidence is None:
+        return "missing"
+    if (
+        evidence.binding_version != binding.version
+        or evidence.merchant_version != merchant.version
+    ):
+        return "binding_changed"
+    if evidence.status != "current":
+        return evidence.status
+    if utc(evidence.expires_at) <= now:
+        return "stale"
+    return None
+
+
+def detect(db, quota_ok=True, provider_worker_ok=True):
     """Bound each scan; a shared transaction lock deduplicates replica detectors."""
     with agent_transaction(db, MONITOR_LOCK):
         candidates = []
@@ -145,6 +184,33 @@ def detect(db, quota_ok=True):
                 )
             )
         now = processing_time(db)
+        for binding in (
+            db.query(ProviderBinding)
+            .filter_by(auto_refresh=True)
+            .order_by(ProviderBinding.refresh_next_at, ProviderBinding.binding_id)
+            .limit(200)
+        ):
+            condition = provider_condition(db, binding, now)
+            if condition:
+                candidates.append(
+                    (
+                        "provider_evidence",
+                        binding.binding_id,
+                        "warning",
+                        "Scheduled provider evidence is "
+                        + condition
+                        + "; refresh or review the binding",
+                    )
+                )
+        if not provider_worker_ok:
+            candidates.append(
+                (
+                    "provider_worker",
+                    "provider-refresh",
+                    "warning",
+                    "Provider refresh worker is stalled; cached evidence still expires and payment checks remain enforced",
+                )
+            )
         old = (
             db.query(EvaluationJob)
             .filter(
@@ -194,14 +260,25 @@ def detect(db, quota_ok=True):
         # Only clear a condition after checking the corresponding entity, not
         # because a bounded scan happened to exclude it.
         for incident in (
-            db.query(Incident).filter(Incident.condition_active.is_(True)).limit(300)
+            db.query(Incident)
+            .filter(Incident.condition_active.is_(True))
+            .order_by(Incident.last_checked_at.asc().nullsfirst(), Incident.incident_id)
+            .limit(300)
         ):
+            incident.last_checked_at = now
             cleared = False
             if incident.kind == "unknown_payment":
                 row = db.get(PaymentRecord, incident.entity_id)
                 cleared = row is not None and row.state != "unknown"
             elif incident.kind == "unknown_payment_backlog":
                 cleared = unknown_count <= 200
+            elif incident.kind == "provider_evidence":
+                binding = db.get(ProviderBinding, incident.entity_id)
+                cleared = (
+                    binding is None or provider_condition(db, binding, now) is None
+                )
+            elif incident.kind == "provider_worker":
+                cleared = provider_worker_ok
             elif incident.kind == "quota_dependency":
                 cleared = quota_ok
             elif incident.kind == "queue_age":

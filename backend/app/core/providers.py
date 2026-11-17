@@ -184,7 +184,9 @@ def assessment(db, merchant):
             db.query(ProviderEvidence)
             .filter_by(binding_id=binding.binding_id)
             .order_by(
-                ProviderEvidence.fetched_at.desc(), ProviderEvidence.evidence_id.desc()
+                ProviderEvidence.refresh_generation.desc(),
+                ProviderEvidence.fetched_at.desc(),
+                ProviderEvidence.evidence_id.desc(),
             )
             .first()
             if binding
@@ -194,7 +196,8 @@ def assessment(db, merchant):
         if evidence:
             state = evidence.status
             if (
-                binding.version != evidence.binding_version
+                binding.merchant_version != merchant.version
+                or binding.version != evidence.binding_version
                 or merchant.version != evidence.merchant_version
             ):
                 state = "binding_changed"

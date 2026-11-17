@@ -38,3 +38,6 @@ Apply the namespace and configuration first, run the migration Job to completion
 ## Gates not proven by this repository
 
 No real cloud account, cluster, managed HA service, domain, TLS issuer, secret manager or operational notification recipient was provided. None has been provisioned, charged or deployed. Multi-zone failure, certificate renewal, managed-database failover and independent backup retention require exercises on the chosen infrastructure. Commercial enrichment/model/test-payment contracts need valid credentials. Acquirer identity and real-money settlement remain unsupported; the payment adapter rejects live keys. These are release gates, not claims a template or mock test can establish.
+
+
+Automatic commercial enrichment is disabled by default. To enable the separate refresh worker, add `SENTINEL_PROVIDER_REFRESH_ENABLED=1` to the deployed configuration and opt in each reviewed mapping in Providers. Verify licensing/quota, failure alerts and actual transport contracts before enabling real calls. Apply revision `0008_provider_refresh` first. Existing mappings require an explicit administrator resave after checking their merchant identities; the migration never reattests them or enables automatic contacts.

@@ -203,3 +203,45 @@ def test_manual_case_requires_existing_request_and_redacts_outbound_summary(db):
     assert retry.status_code == 200
     db.refresh(event)
     assert event.state == "pending" and event.attempts == 0
+
+
+def test_bounded_monitor_scan_eventually_rechecks_later_incidents(db):
+    # Persistently open manual cases must not starve recovery checks behind them.
+    now = datetime.now(timezone.utc)
+    for i in range(305):
+        db.add(
+            Incident(
+                incident_id=f"case_{i:04d}",
+                fingerprint="manual_" + str(i),
+                kind="manual_review",
+                entity_id="r" + str(i),
+                severity="warning",
+                state="open",
+                condition_active=True,
+                summary="Manual case",
+                version=1,
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+    later = Incident(
+        incident_id="z_later_dependency",
+        fingerprint="laterquota",
+        kind="quota_dependency",
+        entity_id="redis",
+        severity="warning",
+        state="open",
+        condition_active=True,
+        summary="Recovered dependency",
+        version=1,
+        first_seen=now,
+        last_seen=now,
+    )
+    db.add(later)
+    db.commit()
+    detect(db, True)
+    db.refresh(later)
+    assert later.condition_active
+    detect(db, True)
+    db.refresh(later)
+    assert not later.condition_active and later.last_checked_at is not None

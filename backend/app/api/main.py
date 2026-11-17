@@ -166,7 +166,16 @@ async def operations_loop(stop):
             except Exception:
                 quota_ok = False
         with SessionLocal() as db:
-            detect(db, quota_ok)
+            from app.core.provider_refresh import scheduler_enabled
+
+            worker = getattr(app.state, "providers_task", None)
+            provider_ok = not scheduler_enabled() or (
+                worker is not None
+                and not worker.done()
+                and time.monotonic() - getattr(app.state, "providers_last_tick", 0)
+                < integer("SENTINEL_PROVIDER_POLL_SECONDS", 15, maximum=300) + 150
+            )
+            detect(db, quota_ok, provider_worker_ok=provider_ok)
             for _ in range(5):
                 if not deliver_one(db):
                     break
@@ -181,6 +190,37 @@ async def operations_loop(stop):
             await asyncio.wait_for(
                 stop.wait(),
                 timeout=integer("SENTINEL_MONITOR_INTERVAL_SECONDS", 30, maximum=300),
+            )
+        except TimeoutError:
+            pass
+
+
+async def provider_refresh_loop(stop):
+    from app.core.provider_refresh import run_one, RefreshConflict
+
+    def cycle():
+        with SessionLocal() as db:
+            for _ in range(2):
+                if stop.is_set():
+                    break
+                try:
+                    if run_one(db) is None:
+                        break
+                except RefreshConflict:
+                    db.rollback()  # A newer binding/lease is authoritative.
+
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(cycle)
+            app.state.providers_last_tick = time.monotonic()
+        except Exception as exc:
+            logger.warning(
+                "Provider refresh worker unavailable (%s)", type(exc).__name__
+            )
+        try:
+            await asyncio.wait_for(
+                stop.wait(),
+                timeout=integer("SENTINEL_PROVIDER_POLL_SECONDS", 15, maximum=300),
             )
         except TimeoutError:
             pass
@@ -265,8 +305,10 @@ async def lifespan(app):
     from app.core.operations import endpoint
 
     from app.core.providers import required_feeds
+    from app.core.provider_refresh import scheduler_enabled
 
     required_feeds()
+    scheduled_providers = scheduler_enabled()
     configured_delivery = endpoint()
     if os.environ.get("SENTINEL_ENV") == "production" and configured_delivery is None:
         raise RuntimeError(
@@ -280,6 +322,13 @@ async def lifespan(app):
     monitor = asyncio.create_task(operations_loop(stop))
     app.state.operations_task = monitor
     app.state.operations_last_tick = time.monotonic()
+    background = [task, monitor]
+    app.state.providers_task = None
+    if scheduled_providers:
+        worker = asyncio.create_task(provider_refresh_loop(stop))
+        app.state.providers_task = worker
+        app.state.providers_last_tick = time.monotonic()
+        background.append(worker)
     try:
         yield
     finally:
@@ -287,14 +336,14 @@ async def lifespan(app):
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    asyncio.shield(task), asyncio.shield(monitor), eval_queue.stop()
+                    *(asyncio.shield(t) for t in background), eval_queue.stop()
                 ),
                 timeout=integer("SENTINEL_SHUTDOWN_SECONDS", 30, maximum=60) + 2,
             )
         except TimeoutError:
-            task.cancel()
-            monitor.cancel()
-            await asyncio.gather(task, monitor, return_exceptions=True)
+            for t in background:
+                t.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
 
 
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
@@ -1013,6 +1062,19 @@ def health():
         < integer("SENTINEL_MONITOR_INTERVAL_SECONDS", 30, maximum=300) + 120
         else "unavailable"
     )
+    from app.core.provider_refresh import scheduler_enabled
+
+    checks["provider_refresh"] = "disabled"
+    if scheduler_enabled():
+        worker = getattr(app.state, "providers_task", None)
+        checks["provider_refresh"] = (
+            "ok"
+            if worker is not None
+            and not worker.done()
+            and time.monotonic() - getattr(app.state, "providers_last_tick", 0)
+            < integer("SENTINEL_PROVIDER_POLL_SECONDS", 15, maximum=300) + 150
+            else "unavailable"
+        )
     ok = (
         checks.get("database") == "ok"
         and checks.get("workers") == "ok"
