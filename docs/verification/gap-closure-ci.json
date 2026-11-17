@@ -1,0 +1,85 @@
+{
+  "implementation_sha": "046ef8c4d595871f092c26216ef9e0858f0c1a03",
+  "workflow_url": "https://github.com/TheMS1314/sentinel/actions/runs/44060647427",
+  "date": "2026-11-17",
+  "backend_tests_passed": 250,
+  "frontend_tests_passed": 17,
+  "container_acceptance_checks": [
+    "built_frontend",
+    "policy_create",
+    "approve",
+    "replay",
+    "changed_replay_conflicts",
+    "hard_cap",
+    "merchant_directory_registration",
+    "merchant_category_cannot_be_spoofed",
+    "http_concurrency",
+    "shared_credential_issue",
+    "shared_credential_authentication",
+    "shared_credential_revoke",
+    "revocation_reaches_all_replicas",
+    "freeze",
+    "frozen_approval",
+    "cancel_undispatched",
+    "unfreeze",
+    "durable_batch_accepted",
+    "quota_outage_fails_closed",
+    "liveness_survives_quota_outage",
+    "readiness_reports_quota_outage",
+    "accepted_jobs_survive_redis_outage",
+    "database_outage_fails_closed",
+    "liveness_survives_database_outage",
+    "readiness_reports_database_outage",
+    "database_restart_recovery",
+    "one_backend_down",
+    "backend_recreation_dns",
+    "backup_restore_records_and_schema",
+    "restricted_runtime_database_authority",
+    "incident_create",
+    "signed_https_alert_delivered",
+    "https_sink_received_unique_event",
+    "protected_operational_metrics"
+  ],
+  "deployment_validation": {
+    "kubernetes": "Real disposable API server; schema dry run only",
+    "gateway": "Actual unprivileged nginx image configuration syntax validation; private probe port rendered"
+  },
+  "jobs": {
+    "containers": {
+      "id": 133961366405,
+      "conclusion": "success"
+    },
+    "deployment-schema": {
+      "id": 133961366749,
+      "conclusion": "success"
+    },
+    "frontend": {
+      "id": 133961366769,
+      "conclusion": "success"
+    },
+    "backend": {
+      "id": 133961366791,
+      "conclusion": "success"
+    }
+  },
+  "runtime_audits": "No known runtime Python/npm vulnerabilities reported",
+  "local_mock_golden": {
+    "cases": 89,
+    "matches": 89,
+    "live_accuracy_claim": false
+  },
+  "external_contracts": {
+    "model": "blocked_local_probe",
+    "razorpay_test": "blocked_local_probe",
+    "recorded_future": "blocked_local_probe",
+    "riskrecon": "blocked_local_probe"
+  },
+  "release_gates": [
+    "Licensed integrations and real model/test-order contract verification",
+    "Acquirer identity / settlement binding; live-money keys remain rejected",
+    "Representative independent labels and repeated live evaluations",
+    "Actual HA infrastructure, external TLS/certificate renewal, secret management, failover/recovery exercise",
+    "Operational notification recipient verification"
+  ],
+  "main_merged": false
+}
