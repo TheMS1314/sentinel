@@ -65,7 +65,12 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=moderate
+      - run: python ../scripts/check_frontend_audit.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: frontend-audit
+          path: artifacts/frontend-audit.json
   containers:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

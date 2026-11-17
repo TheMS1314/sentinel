@@ -207,6 +207,14 @@ class SentinelOrchestrator:
                     raise ConflictError(
                         "Job lease lost before authorization; durable request state must be checked"
                     )
+                if processing_time(self.db) - utc(job.created_at) >= timedelta(
+                    seconds=integer(
+                        "SENTINEL_JOB_MAX_AGE_SECONDS", 300, minimum=30, maximum=3600
+                    )
+                ):
+                    raise ConflictError(
+                        "Job command expired before authorization; inspect durable request state"
+                    )
             current = (
                 self.db.query(PolicyRecord)
                 .filter_by(agent_id=request.agent_id, active=True)

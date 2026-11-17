@@ -179,14 +179,14 @@ class PostgresEvaluationQueue:
                 if row is None:
                     return None
                 row.updated_at = now
-                if row.attempts == 0 and now - utc(row.created_at) > timedelta(
+                if now - utc(row.created_at) >= timedelta(
                     seconds=integer(
                         "SENTINEL_JOB_MAX_AGE_SECONDS", 300, minimum=30, maximum=3600
                     )
                 ):
                     row.status, row.error, row.completed_at = (
                         "FAILED",
-                        "Job expired before authorization; submit a fresh request",
+                        "Job command expired; inspect durable request state before submitting fresh work",
                         now,
                     )
                     return None

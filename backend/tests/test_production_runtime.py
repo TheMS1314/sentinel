@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 from app.api.main import app
 from app.core.http_limits import RequestLimitsMiddleware
-from app.core.orchestrator import SentinelOrchestrator
+from app.core.orchestrator import SentinelOrchestrator, ConflictError
 from app.core.payment_recovery import recover_stale_dispatches
 from app.core.postgres_queue import PostgresEvaluationQueue
 from app.core.queue_errors import QueueCapacityError
@@ -314,6 +314,35 @@ def test_job_admission_timestamps_use_database_clock(db, monkeypatch):
     row = db.get(EvaluationJob, jid)
     assert row.created_at.replace(tzinfo=timezone.utc) == trusted
     assert row.updated_at.replace(tzinfo=timezone.utc) == trusted
+
+
+def test_retried_sql_commands_do_not_escape_submission_deadline(db):
+    q = PostgresEvaluationQueue(lambda p: p)
+    jid = asyncio.run(q.enqueue({"agent_id": "a"}))
+    assert q._claim()
+    row = db.get(EvaluationJob, jid)
+    row.created_at = datetime.now(timezone.utc) - timedelta(seconds=301)
+    row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    assert q._claim() is None
+    assert q.get_job(jid)["status"] == "FAILED"
+    assert "expired" in q.get_job(jid)["error"]
+
+
+def test_live_worker_lease_does_not_extend_command_authorization_deadline(db):
+    p = make_policy(db)
+    req = request(p)
+    q = PostgresEvaluationQueue(lambda p: p)
+    jid = asyncio.run(q.enqueue({"agent_id": p.agent_id}))
+    _, token, _ = q._claim()
+    row = db.get(EvaluationJob, jid)
+    row.created_at = datetime.now(timezone.utc) - timedelta(seconds=301)
+    db.commit()
+    with pytest.raises(ConflictError, match="command expired"):
+        SentinelOrchestrator(db).evaluate_transaction(
+            p, req, work_lease=dict(job_id=jid, token=token)
+        )
+    assert db.get(PaymentRecord, req.request_id) is None
 
 
 def test_sql_claims_are_unique_across_workers(db):

@@ -148,7 +148,7 @@ class PaymentRecord(Base):
     budget_day = Column(String, nullable=True)
     order_id = Column(String, unique=True, nullable=True)
     error = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
+    updated_at = Column(DateTime, default=now_utc)
     dispatch_expires_at = Column(DateTime, default=dispatch_deadline, nullable=True)
     authorization_policy_id = Column(String, nullable=True)
     authorizing_credential_version = Column(Integer, default=1, nullable=False)
@@ -290,7 +290,7 @@ class EvaluationJob(Base):
     lease_token = Column(String, nullable=True)
     lease_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=now_utc, nullable=False)
-    updated_at = Column(DateTime, default=now_utc, onupdate=now_utc, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
 
