@@ -100,16 +100,21 @@ jobs:
 
   deployment-gateway:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       SENTINEL_GATEWAY_ACCEPTANCE: '1'
+      SENTINEL_KUBERNETES_ACCEPTANCE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
           go-version: stable
       - run: go install sigs.k8s.io/kind@v0.33.0
-      - run: kind create cluster --name sentinel-gateway --wait 60s
+      - run: |
+          docker build -t "sentinel-ci-backend:$GITHUB_SHA" backend
+          docker build -t "sentinel-ci-frontend:$GITHUB_SHA" frontend
+      - run: kind create cluster --name sentinel-gateway --config deploy/kubernetes/kind-ci.yaml --wait 60s
+      - run: kind load docker-image "sentinel-ci-backend:$GITHUB_SHA" "sentinel-ci-frontend:$GITHUB_SHA" --name sentinel-gateway
       - run: helm version --short
       - run: helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.10.0 -n envoy-gateway-system --create-namespace --wait --timeout 180s
       - run: |
@@ -138,6 +143,7 @@ jobs:
               handle.write('SENTINEL_GATEWAY_FIXTURE_IMAGE='+image+'\n')
           PYCODE
       - run: python scripts/gateway_acceptance.py
+      - run: python scripts/kubernetes_acceptance.py
       - name: Capture gateway diagnostics
         if: always()
         run: |
@@ -148,6 +154,13 @@ jobs:
           kubectl --context kind-sentinel-gateway -n sentinel-ci-routing get pods -o wide || true
           kubectl --context kind-sentinel-gateway -n sentinel-ci-routing logs deployment/sentinel-gateway --tail=25 || true
           cat artifacts/gateway-forward.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application get pods -o wide || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application get events --sort-by=.lastTimestamp > artifacts/kubernetes-events.txt || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs job/sentinel-migrate --tail=80 > artifacts/kubernetes-migration.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/sentinel-api --all-pods=true --tail=80 > artifacts/kubernetes-api.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/ci-postgres --tail=30 > artifacts/kubernetes-postgres.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/sentinel-frontend --tail=30 > artifacts/kubernetes-frontend.log || true
+          kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/sentinel-gateway --tail=30 > artifacts/kubernetes-nginx.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
