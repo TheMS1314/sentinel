@@ -112,7 +112,7 @@ npm run build
 
 Tests default to a disposable SQLite database. Set `SENTINEL_TEST_DATABASE_URL` to a dedicated PostgreSQL database whose name ends in `_test` to exercise cross-connection PostgreSQL locking. Tests never use the application's configured database or provider keys. Redis tests use isolated namespaces.
 
-The GitHub workflow provisions PostgreSQL/Redis services and verifies both fresh and legacy schema migrations. The [recorded successful run](https://github.com/TheMS1314/sentinel/actions/runs/43947067184) passed **175 backend tests** and **8 frontend tests**, frontend lint/build and npm audit. See [verification status](docs/HARDENING_REPORT.md) for the execution scope and remaining external integration limits.
+The GitHub workflow provisions PostgreSQL/Redis services and verifies both fresh and legacy schema migrations. The [recorded successful run](https://github.com/TheMS1314/sentinel/actions/runs/44044494272) passed **202 backend tests** and **9 frontend tests**, frontend lint/build, runtime dependency audits and **23 container acceptance checks**, including dependency outages, replica recreation and backup restoration. See [verification status](docs/HARDENING_REPORT.md) for the execution scope and remaining external integration limits.
 
 ```bash
 PYTHONPATH=backend .venv/bin/python -m app.eval.eval_harness

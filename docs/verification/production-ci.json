@@ -1,0 +1,54 @@
+{
+  "implementation_sha": "8a9fbc9aa85a18afa9b033ba228f347eeb692ba5",
+  "workflow_url": "https://github.com/TheMS1314/sentinel/actions/runs/44044494272",
+  "date": "2026-11-17",
+  "backend_tests_passed": 202,
+  "frontend_tests_passed": 9,
+  "container_acceptance_checks": [
+    "built_frontend",
+    "policy_create",
+    "approve",
+    "replay",
+    "changed_replay_conflicts",
+    "hard_cap",
+    "http_concurrency",
+    "freeze",
+    "frozen_approval",
+    "cancel_undispatched",
+    "unfreeze",
+    "durable_batch_accepted",
+    "quota_outage_fails_closed",
+    "liveness_survives_quota_outage",
+    "readiness_reports_quota_outage",
+    "accepted_jobs_survive_redis_outage",
+    "database_outage_fails_closed",
+    "liveness_survives_database_outage",
+    "readiness_reports_database_outage",
+    "database_restart_recovery",
+    "one_backend_down",
+    "backend_recreation_dns",
+    "backup_restore_records_and_schema"
+  ],
+  "python_runtime_audit": "No known vulnerabilities found",
+  "npm_audit_vulnerabilities": 0,
+  "profile": "Isolated test database and mock-provider Compose acceptance; not a live-provider production deployment",
+  "timings": {
+    "http_mock": {
+      "elapsed_seconds": 0.369,
+      "failed": 0,
+      "p50_ms": 109.18,
+      "p95_ms": 133.65,
+      "requests": 24,
+      "successful": 24,
+      "throughput_per_second": 65.02,
+      "workers": 8
+    },
+    "logical_restore_seconds": 1.273
+  },
+  "limitations": [
+    "24 HTTP requests with 8 workers are a smoke measurement, not an SLA or capacity claim",
+    "Small logical backup/restore timing is not production RPO/RTO",
+    "Live LLM, Razorpay test-provider and licensed intelligence integrations remain unverified",
+    "Multi-zone HA, external TLS, identity integration and alert delivery are deployment-specific release gates"
+  ]
+}

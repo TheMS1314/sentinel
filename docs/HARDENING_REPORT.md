@@ -24,8 +24,8 @@ This branch replaces several prototype assumptions with explicit authority, acco
 | Invalid LLM output/confidence | Local schema validation, bounded timeout/retry, finite 0..1 confidence, safe HOLD on unusable output |
 | Unscoped/stale retrieval | Same-agent/policy/goal/prior-time corpus, human-corrected precedent, bounded index rebuild, ablation switch |
 | Risk confidence mixed with model confidence | Separate risk field and UI label; circular hour distance, normalized merchants, corrected zero-variance explanation |
-| Redis pop lost claimed jobs | Consumer groups, pending-entry reclamation, lease renewal, atomic completion/ack and bounded atomic batch enqueue |
-| Redis outage became unrelated local queues | Redis mode fails closed rather than silently falling back |
+| Accepted work could be lost or redelivered across failures | Authoritative PostgreSQL queue with atomic batch admission, renewable leases and token fencing of authorization and completion |
+| Dependency outage changed queue authority | SQL jobs remain durable; Redis quota failures close new HTTP admission; no fallback |
 | Per-replica quota | Redis-time atomic sliding-window quota per subject; retry header preserved; quota outage fails closed |
 | Dashboard refreshed wrong context | Request-generation/context checks, current polling closures, non-overlapping batch polls, timer cleanup and pending review buttons |
 | Policy form lost strict merchant lists | Allowlist retained/editable; owner identity and authoritative goal represented explicitly |
@@ -47,18 +47,22 @@ This branch replaces several prototype assumptions with explicit authority, acco
 | Possible accidental live gateway use | Non-test Razorpay keys rejected |
 | Old/unused vulnerable dependencies | Removed unnecessary LangChain/LangGraph runtime; updated and pinned runtime/development dependency closures; refreshed npm lock |
 
+## Production runtime follow-up
+
+The runtime now uses PostgreSQL for accepted jobs, releases agent locks and database connections during model IO, and rechecks policy/clock/budget before committing. Worker leases fence financial authorization as well as completion. Pending approvals expire or can be cancelled; current policy and authorizing credential scope are checked again before dispatch. Stale processing becomes unknown, late provider responses preserve captured state, and privileged emergency freeze works without Redis. Request bodies/admission, DB pools/timeouts, model concurrency, transports, recovery batches and shutdown are bounded. Historical migration schemas are frozen. The administrator UI supports reasoned pending cancellation. See [runtime design, upgrade and incident operations](PRODUCTION_READINESS.md).
+
 ## Executed verification
 
-- Backend CI: **175 tests passed** on Ubuntu/Python 3.12 with PostgreSQL 16 and Redis 7, including fresh and legacy Alembic upgrades, pending-entry recovery, atomic queue capacity, concurrent allowance/dispatch tests, HTTP access/session/CSRF tests, signed webhook handling and idempotency. [Successful run](https://github.com/TheMS1314/sentinel/actions/runs/43947067184) at commit `fe0c2f2`. The complete local suite passed 172 tests, with three PostgreSQL migration variants skipped because no local server is available. Those three variants passed in CI.
-- Frontend: **8 tests passed**, both locally and in GitHub CI; lint clean; production build passed; CI npm audit passed.
-- Runtime dependency audit: **no known vulnerabilities found** in the 47 pinned Python runtime packages at audit time. Frontend npm audit: **zero vulnerabilities**. This is a time-specific advisory check, not a security guarantee.
-- Golden benchmark: **89/89**, synthetic prevalence: **500/500**, hard benchmark: **14/16**. These refreshed runs use mock reasoning; the hard misses are conservative holds where constructed labels expect approval. Safety counts and runtime/dataset fingerprints are saved.
-- Fuzzing: **187 variants, zero selected invariant violations** with isolated contexts.
-- Demo reset/seed: checked against a disposable database, never the user's application database.
-- Compose configuration validated. Docker images and full deployment could not be started because the local Docker daemon is unavailable.
-- PostgreSQL service/concurrency and fresh/legacy migration tests **passed in GitHub CI**. Local database tests use SQLite; the macOS sandbox prevents starting a separate PostgreSQL shared-memory server here. Concurrent database sessions exercise PostgreSQL advisory locking; a full container deployment and fault-injection campaign across replicas remain unverified.
-- External OpenRouter/Anthropic and Razorpay test-provider calls were **not made**. Keys, external provider behavior and real signature configuration require separate integration verification.
-- The branch is published and backend/frontend CI jobs passed. The initial service health-command quoting error was corrected and verified by subsequent runs. The latest main README edit was incorporated into this branch. No deployment or merge into main was performed.
+- **202 backend tests passed** on Ubuntu/Python 3.12 with PostgreSQL 16 and Redis 7. Coverage includes original authority/accounting behavior, two-phase semantic races, lease fencing, queue restart/retry/retention, approval expiry/cancellation, credential changes, stale provider effects, migrations and HTTP limits.
+- **9 frontend tests passed**; lint and production build passed. Pending cancellation requires an explicit reason and targets the selected reservation.
+- Python runtime dependency audit: **no known vulnerabilities found**. npm audit: **zero known vulnerabilities**. These are time-specific advisory checks, not proof of system security.
+- **All 23 real container acceptance checks passed**: built UI, policy/approval/replay, changed replay rejection, hard cap, 24 concurrent HTTP purchases, freeze/cancel/resume, durable batch admission, Redis outage and recovery, PostgreSQL outage and recovery, continued service with one backend stopped, DNS refresh after backend recreation, and logical backup restoration into an isolated database.
+- The measured HTTP smoke run completed **24/24 requests**, zero failures, 8 workers, p50 **109.18 ms**, p95 **133.65 ms**, about **65.02 requests/s**. The small logical restore exercise took **1.273 s**. Both use synthetic data and mock providers; neither is an SLA, production capacity claim, or production disaster-recovery target.
+- [Successful implementation run](https://github.com/TheMS1314/sentinel/actions/runs/44044494272), commit `8a9fbc9`; [machine-readable evidence](verification/production-ci.json). The CI artifact contains the complete acceptance report, image identifiers, statuses and container logs.
+- Current local full suite: **187 passed, 15 skipped** when Redis and local PostgreSQL were unavailable. All Redis/PostgreSQL variants ran successfully in CI. The earlier complete local run before the final additions passed 196 tests with three PostgreSQL-only skips.
+- Synthetic evaluations were rerun against this runtime in explicit mock mode: golden **89/89**, hard **14/16** (two conservative holds), and fuzz **187 cases / zero selected invariant violations**. Updated reports are in `backend/data`. Earlier prevalence results remain historical, not a fresh run.
+- No live OpenRouter/Anthropic, Razorpay test-provider, or licensed Mastercard/Recorded Future/RiskRecon calls were made. Full Compose execution was verified in GitHub CI, not on a production host. External TLS, HA infrastructure and production-provider contracts were not provisioned.
+- The branch is published in PR #1. Main remains unmerged and no production deployment was performed.
 
 ## Risk intelligence follow-up
 
@@ -71,7 +75,7 @@ The branch additionally implements local threat evidence, owner-scoped vendor pr
 3. A database and external provider cannot share one atomic transaction. Unknown effects stay reserved until a known order is reconciled. A provider idempotency/identity contract is still required before expanding beyond test orders.
 4. Privileged database administrators remain trusted. Separate records and review events are auditable application history, not cryptographically tamper-proof storage.
 5. Compose is a local topology, with shared dependencies and Redis AOF every second. TLS, managed identities/secrets, backups, distributed dependency failover and operator alert delivery belong to a deployment environment; they were not fabricated or provisioned during this task.
-6. PostgreSQL CI verifies the covered database, concurrency and migration paths. External model/provider integrations and full deployment still require their own execution evidence; passing CI does not establish production readiness.
+6. PostgreSQL and container CI verify the covered runtime, failure and migration paths. Live-provider contracts and a real production deployment still require their own evidence; passing CI does not establish production readiness.
 
 ## Review and publication
 

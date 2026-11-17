@@ -77,7 +77,7 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 
 ## Executed verification
 
-[GitHub CI](https://github.com/TheMS1314/sentinel/actions/runs/43947067184) passed **175 backend tests** with PostgreSQL 16 and Redis 7 and **eight frontend tests**, lint, build and npm audit. Coverage includes expiry/identity/source/owner boundaries, freezes after approval, new threats after approval, human review, replay, concurrent cross-agent count limits, exact rolling amounts, failed-attempt accounting, control audit/version conflicts, and fresh/legacy/already-hardened upgrades. Local tests passed 172 cases with three PostgreSQL-only variants skipped; all three passed in CI. The mock golden set remains 89/89. Real provider integrations and full container deployment remain untested.
+[GitHub CI](https://github.com/TheMS1314/sentinel/actions/runs/44044494272) passed **202 backend tests**, **nine frontend tests**, lint, build and runtime audits. The real Compose acceptance stack passed 23 checks covering HTTP decisions, replay, concurrency, freeze/cancellation, database/cache interruptions, backend recreation and logical restoration. See [the runtime verification report](HARDENING_REPORT.md) and [deployment boundaries](PRODUCTION_READINESS.md). Commercial integrations and real-provider behavior remain unverified.
 
 ## Commercial integration path
 
