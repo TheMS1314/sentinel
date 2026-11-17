@@ -202,6 +202,17 @@ async def lifespan(app):
                 "Production profile requires an explicitly configured live reasoning provider"
             )
         RazorpayGateway()
+        from app.core.settings import validate_production_transport
+
+        validate_production_transport(
+            os.environ.get("SENTINEL_DATABASE_URL", ""), os.environ.get("REDIS_URL", "")
+        )
+        if os.environ.get("SENTINEL_MIGRATION_DATABASE_URL") or os.environ.get(
+            "SENTINEL_RUNTIME_DB_PASSWORD"
+        ):
+            raise RuntimeError(
+                "Migration/provisioning credentials must not be mounted in the runtime service"
+            )
         origins = os.environ.get("SENTINEL_ALLOWED_ORIGINS", "").split(",")
         if not origins or any(
             not o.startswith("https://") or "*" in o for o in origins
@@ -226,6 +237,13 @@ async def lifespan(app):
         or os.environ.get("SENTINEL_REQUIRE_MIGRATIONS") == "1"
     ):
         with SessionLocal() as db:
+            if (
+                os.environ.get("SENTINEL_ENV") == "production"
+                or os.environ.get("SENTINEL_REQUIRE_RESTRICTED_DB") == "1"
+            ):
+                from app.ops.db_privileges import validate
+
+                validate(db)
             version = db.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()

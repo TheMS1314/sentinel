@@ -13,7 +13,9 @@ if backend.exists() or compose.exists():
     )
 password = secrets.token_urlsafe(32)
 key = secrets.token_urlsafe(32)
-compose.write_text(f"POSTGRES_PASSWORD={password}\n")
+compose.write_text(
+    f"POSTGRES_PASSWORD={password}\nSENTINEL_RUNTIME_DB_PASSWORD={secrets.token_urlsafe(32)}\n"
+)
 backend.write_text(
     "SENTINEL_ENV=development\nLLM_PROVIDER=openrouter\nOPENROUTER_API_KEY=\n"
     "RAZORPAY_KEY_ID=\nRAZORPAY_KEY_SECRET=\n"

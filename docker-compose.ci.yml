@@ -2,6 +2,7 @@
 services:
   alerts:
     image: python:3.12-slim
+    user: "1001:1001"
     command: [python, /sink.py]
     environment:
       SINK_SECRET: ci-synthetic-alert-signing-secret-32plus

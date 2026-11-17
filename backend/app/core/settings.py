@@ -48,3 +48,21 @@ def dispatch_deadline():
     return datetime.now(timezone.utc) + timedelta(
         seconds=integer("SENTINEL_APPROVAL_TTL_SECONDS", 300, minimum=30, maximum=3600)
     )
+
+
+def validate_production_transport(database_url, redis_url):
+    database = make_url(database_url)
+    if database.query.get("sslmode") != "verify-full" or not database.query.get(
+        "sslrootcert"
+    ):
+        raise RuntimeError(
+            "Production PostgreSQL requires sslmode=verify-full and an explicit CA file"
+        )
+    from urllib.parse import urlsplit, parse_qs
+
+    redis = urlsplit(redis_url)
+    if redis.scheme != "rediss" or not redis.password:
+        raise RuntimeError("Production Redis requires authenticated rediss transport")
+    options = parse_qs(redis.query)
+    if options.get("ssl_cert_reqs", ["required"])[0] not in ("required", "2"):
+        raise RuntimeError("Redis TLS certificate validation must remain required")

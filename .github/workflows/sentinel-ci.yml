@@ -33,8 +33,8 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: pip install -r backend/requirements-dev.txt
       - run: python -m pip check
-      - run: python -m ruff check --select F backend scripts
-      - run: python -m ruff format --check backend scripts
+      - run: python -m ruff check --select F backend scripts deploy
+      - run: python -m ruff format --check backend scripts deploy
       - run: python -m pip_audit -r backend/requirements.txt --no-deps --disable-pip --progress-spinner off
       - run: python -m pytest backend/tests -q --timeout=45 --junitxml=artifacts/backend.xml
       - uses: actions/upload-artifact@v4
@@ -96,4 +96,26 @@ jobs:
             artifacts/
             !artifacts/alert-certs/**
       - run: docker compose down --volumes --remove-orphans
+        if: always()
+
+  deployment-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: go install sigs.k8s.io/kind@v0.33.0
+      - run: kind create cluster --name sentinel-schema --wait 60s
+      - run: |
+          mkdir -p artifacts
+          python deploy/kubernetes/render.py --host sentinel.invalid --backend-image registry.invalid/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --frontend-image registry.invalid/frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --gateway-image registry.invalid/gateway@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --output artifacts/deployment.yaml
+          kubectl create namespace sentinel
+          kubectl apply --dry-run=server -f artifacts/deployment.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-schema
+          path: artifacts/deployment.yaml
+      - run: kind delete cluster --name sentinel-schema
         if: always()

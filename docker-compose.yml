@@ -29,6 +29,8 @@ services:
     env_file: ./backend/.env
     environment:
       SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      SENTINEL_MIGRATION_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      SENTINEL_RUNTIME_DB_PASSWORD: ${SENTINEL_RUNTIME_DB_PASSWORD:?Generate a separate runtime database password}
       SENTINEL_AUTH_BACKEND: database
     command: [python, -m, app.ops.initialize]
     depends_on:
@@ -38,7 +40,8 @@ services:
     build: ./backend
     env_file: ./backend/.env
     environment: &backend-env
-      SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      SENTINEL_DATABASE_URL: postgresql://sentinel_runtime:${SENTINEL_RUNTIME_DB_PASSWORD}@postgres:5432/sentinel
+      SENTINEL_REQUIRE_RESTRICTED_DB: '1'
       SENTINEL_AUTH_BACKEND: database
       REDIS_URL: redis://redis:6379/0
       QUEUE_BACKEND: postgres

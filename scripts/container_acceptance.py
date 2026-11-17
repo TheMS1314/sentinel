@@ -367,6 +367,18 @@ finally:
         "exec", "-T", "postgres", "dropdb", "-U", "sentinel", "sentinel_restore_test"
     )
 report["timings"]["logical_restore_seconds"] = round(time.perf_counter() - start, 3)
+# The actual runtime principal is not the schema owner and cannot erase history.
+privileges = compose(
+    "exec",
+    "-T",
+    "backend1",
+    "python",
+    "-c",
+    "from app.models.db import SessionLocal;from app.ops.db_privileges import validate;db=SessionLocal();validate(db);print('restricted');db.close()",
+)
+check(
+    "restricted_runtime_database_authority", privileges.decode().strip() == "restricted"
+)
 # Verify actual signed HTTPS delivery across the container boundary.
 case = http(
     "/api/ops/incidents",
@@ -385,6 +397,7 @@ while time.monotonic() < end:
         break
     time.sleep(1)
 if not delivered:
+    print(compose("logs", "--no-color", "--tail", "15", "alerts").decode(), flush=True)
     print("ALERT_DIAGNOSTICS", json.dumps(http("/api/ops/alerts")[1]), flush=True)
 check("signed_https_alert_delivered", bool(delivered))
 sink = compose(
