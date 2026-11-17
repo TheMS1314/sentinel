@@ -4,9 +4,13 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
@@ -25,8 +29,8 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       SENTINEL_ENV: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
           cache: pip
@@ -37,7 +41,7 @@ jobs:
       - run: python -m ruff format --check --diff backend scripts deploy
       - run: python -m pip_audit -r backend/requirements.txt --no-deps --disable-pip --progress-spinner off
       - run: python -m pytest backend/tests -q --timeout=45 --junitxml=artifacts/backend.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: backend-results
@@ -45,13 +49,14 @@ jobs:
             artifacts/
             !artifacts/alert-certs/**
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
           cache: npm
@@ -62,15 +67,15 @@ jobs:
       - run: npm run build
       - run: npm audit --audit-level=moderate
   containers:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       COMPOSE_PROJECT_NAME: sentinel-ci-${{ github.run_id }}-${{ github.run_attempt }}
       SENTINEL_ACCEPTANCE: '1'
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - run: |
@@ -88,7 +93,7 @@ jobs:
           docker compose ps --all > artifacts/compose-status.txt
           docker compose logs --no-color --tail 150 > artifacts/compose.log
           docker compose logs --no-color backend1 backend2 | rg "Operations monitor unavailable" | tail -5 || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: container-acceptance
@@ -99,14 +104,14 @@ jobs:
         if: always()
 
   deployment-gateway:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       SENTINEL_GATEWAY_ACCEPTANCE: '1'
       SENTINEL_KUBERNETES_ACCEPTANCE: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
       - run: go install sigs.k8s.io/kind@v0.33.0
@@ -161,7 +166,7 @@ jobs:
           kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/ci-postgres --tail=30 > artifacts/kubernetes-postgres.log || true
           kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/sentinel-frontend --tail=30 > artifacts/kubernetes-frontend.log || true
           kubectl --context kind-sentinel-gateway -n sentinel-ci-application logs deployment/sentinel-gateway --tail=30 > artifacts/kubernetes-nginx.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: deployment-gateway

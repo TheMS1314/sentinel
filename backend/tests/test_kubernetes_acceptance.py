@@ -1,6 +1,7 @@
 """Keep the destructive CI harness isolated and preserve production deployment invariants."""
 
 import importlib.util
+import json
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -19,6 +20,30 @@ def test_application_acceptance_requires_explicit_opt_in(monkeypatch):
         with pytest.raises(SystemExit):
             module.main()
         kube.assert_not_called()
+
+
+def test_application_acceptance_refuses_reusing_namespace_before_any_mutation(
+    monkeypatch,
+):
+    monkeypatch.setenv("SENTINEL_KUBERNETES_ACCEPTANCE", "1")
+    with (
+        patch.object(
+            module.edge,
+            "kube",
+            side_effect=[
+                b"https://127.0.0.1:6443",
+                json.dumps(
+                    dict(items=[dict(metadata=dict(name=module.NAMESPACE))])
+                ).encode(),
+            ],
+        ) as kube,
+        patch.object(module.edge, "apply") as apply,
+    ):
+        with pytest.raises(RuntimeError, match="fresh namespace"):
+            module.main()
+        assert kube.call_count == 2
+        assert all(call.args[0] in ("config", "get") for call in kube.call_args_list)
+        apply.assert_not_called()
 
 
 def test_application_overrides_preserve_replica_security_and_runtime_separation():

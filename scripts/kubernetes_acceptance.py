@@ -89,6 +89,9 @@ def dependency(name, image, uid, port, args, env=None, storage=None):
             requests=dict(cpu="100m", memory="64Mi"),
             limits=dict(cpu="500m", memory="256Mi"),
         ),
+        readinessProbe=dict(
+            tcpSocket=dict(port=port), periodSeconds=2, timeoutSeconds=1
+        ),
         volumeMounts=[
             dict(name="tmp", mountPath="/tmp"),
             dict(name="data", mountPath=storage or "/data"),
@@ -233,6 +236,7 @@ def main():
             POSTGRES_USER="sentinel",
             POSTGRES_PASSWORD=owner_password,
             PGDATA="/var/lib/postgresql/data/pgdata",
+            PGHOST="/tmp",
         ),
     )
     provider_keys = dict(
@@ -283,7 +287,16 @@ def main():
     # SQL must accept connections, not merely have a running container.
     edge.wait_for(
         lambda: (
-            ns("exec", "deployment/ci-postgres", "--", "pg_isready", "-U", "sentinel")
+            ns(
+                "exec",
+                "deployment/ci-postgres",
+                "--",
+                "pg_isready",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "sentinel",
+            )
             .decode()
             .find("accepting connections")
             >= 0

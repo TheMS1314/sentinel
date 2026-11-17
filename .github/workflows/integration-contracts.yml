@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   contracts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       LLM_PROVIDER: ${{ vars.SENTINEL_CONTRACT_LLM_PROVIDER || 'openrouter' }}
@@ -26,13 +26,13 @@ jobs:
       SENTINEL_ENV: integration_test
       CONTRACT_TARGETS: ${{ inputs.targets }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - run: pip install -r backend/requirements.txt
       - run: PYTHONPATH=backend python -m app.ops.verify_integrations --execute --targets "$CONTRACT_TARGETS" --output artifacts/integration-contracts.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: integration-contracts
