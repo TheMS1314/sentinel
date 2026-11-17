@@ -99,6 +99,12 @@ def dependency(name, image, uid, port, args, env=None, storage=None):
     )
     if env:
         container["envFrom"] = [dict(secretRef=dict(name=env))]
+    if name == "ci-postgres":
+        # The upstream bootstrap clears PGHOST. Preserve its default socket
+        # location and make it writable rather than relying on an env override.
+        container["volumeMounts"].append(
+            dict(name="tmp", mountPath="/var/run/postgresql")
+        )
     return [
         dict(
             apiVersion="apps/v1",
@@ -236,7 +242,6 @@ def main():
             POSTGRES_USER="sentinel",
             POSTGRES_PASSWORD=owner_password,
             PGDATA="/var/lib/postgresql/data/pgdata",
-            PGHOST="/tmp",
         ),
     )
     provider_keys = dict(
@@ -270,7 +275,7 @@ def main():
             "postgres:16-alpine",
             70,
             5432,
-            ["postgres", "-c", "unix_socket_directories=/tmp"],
+            ["postgres"],
             "ci-postgres",
             "/var/lib/postgresql/data",
         )
