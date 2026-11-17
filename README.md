@@ -79,7 +79,7 @@ Vite proxies `/api` to the local backend. Never put an API key in `VITE_` variab
 
 Browser login exchanges a human credential for an eight-hour HttpOnly session. Cookie mutations require an allowlisted Origin and `X-Sentinel-CSRF: 1`. Rotating/removing the credential revokes its sessions. Service callers use `X-API-Key`.
 
-The development fallback key is allowed only without scoped credentials and outside the production profile. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. TLS must be terminated by your deployment infrastructure; the included gateway is a local HTTP demo.
+Compose uses shared database authority: the initialization job seeds the configured registry once, storing only key hashes. The Access tab supports audited create/rotate/revoke/scope operations. Restarting with old environment values never resurrects a revoked key. Production requires `SENTINEL_AUTH_BACKEND=database`. The configured-key fallback is development-only. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. TLS must be terminated by your deployment infrastructure; the included gateway is a local HTTP demo.
 
 ## API overview
 

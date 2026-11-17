@@ -39,7 +39,9 @@ from app.core.auth import (
     require_api_key,
     require_agent,
     authenticate,
-    credentials,
+    principal_for_subject,
+    validate_authority,
+    assert_current_principal,
     digest,
 )
 from app.core.rate_limit import enforce_rate_limit
@@ -57,6 +59,7 @@ from app.core.schemas import (
 )
 from app.core.redis_queue import make_queue
 from app.core.settings import integer
+from app.schema_version import SCHEMA_REVISION
 from app.core.queue_errors import QueueCapacityError
 from app.agents.purchasing_agent import PurchasingAgent
 
@@ -67,11 +70,11 @@ def _process_single_evaluation(payload):
     payload = dict(payload)
     scope = payload.pop("_submitted_by", None)
     work_lease = payload.pop("_job_lease", None)
+    submitted_version = payload.pop("_submitted_version", 1)
     if scope:
-        row = next((r for r in credentials() if r["subject"] == scope), None)
-        if not row:
-            raise ValueError("Submitting credential has been revoked")
-        principal = authenticate(row["key"])
+        principal = principal_for_subject(scope)
+        if principal is None or principal.credential_version != submitted_version:
+            raise ValueError("Submitting credential has been revoked or rotated")
     scenario = payload.pop("scenario_tag", "")
     db = SessionLocal()
     try:
@@ -91,6 +94,7 @@ def _process_single_evaluation(payload):
                 scenario,
                 actor_id=scope or "internal",
                 work_lease=work_lease,
+                actor_version=submitted_version,
             )
             .__dict__
         )
@@ -149,7 +153,7 @@ async def recover_outbox(stop):
 
 @asynccontextmanager
 async def lifespan(app):
-    credentials()  # fail closed on invalid production access configuration
+    validate_authority()  # fail closed on invalid or empty shared authority
     from app.core.llm_client import LLMClient
     from app.core.razorpay_gateway import RazorpayGateway
 
@@ -190,7 +194,7 @@ async def lifespan(app):
             version = db.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            if version != "0003_runtime_safety":
+            if version != SCHEMA_REVISION:
                 raise RuntimeError(
                     "Apply the current Alembic migration before serving traffic"
                 )
@@ -416,6 +420,7 @@ def create_policy(
     if principal.role != "admin" and body.owner_human_id != principal.owner_id:
         raise HTTPException(403, "Cannot assign another owner")
     with agent_transaction(db, body.agent_id):
+        assert_current_principal(principal, db)
         existing = db.query(PolicyRecord).filter_by(agent_id=body.agent_id).all()
         if any(r.owner_human_id != body.owner_human_id for r in existing):
             raise HTTPException(403, "Agent ownership cannot be reassigned")
@@ -699,7 +704,12 @@ def evaluate_transaction(
         request.raw_agent_goal = existing.raw_agent_goal
     return (
         SentinelOrchestrator(db)
-        .evaluate_transaction(policy, request, actor_id=principal.subject)
+        .evaluate_transaction(
+            policy,
+            request,
+            actor_id=principal.subject,
+            actor_version=principal.credential_version,
+        )
         .__dict__
     )
 
@@ -721,6 +731,7 @@ def resolve_hold(
         body.human_verdict,
         reviewer_id=principal.subject,
         reason=body.reason,
+        reviewer_principal=principal,
     )
 
 
@@ -732,6 +743,7 @@ def prepare_batch(body, principal):
             require_agent(principal, item.agent_id, db)
             payload = item.domain(load_policy(item.agent_id, db)).__dict__
             payload["_submitted_by"] = principal.subject
+            payload["_submitted_version"] = principal.credential_version
             payloads.append(payload)
         return payloads
 
@@ -793,7 +805,12 @@ def prepare_simulation(body, principal):
     with SessionLocal() as db:
         _, requests, tag = scenario_requests(body, db, principal)
         return [
-            dict(r.__dict__, scenario_tag=tag, _submitted_by=principal.subject)
+            dict(
+                r.__dict__,
+                scenario_tag=tag,
+                _submitted_by=principal.subject,
+                _submitted_version=principal.credential_version,
+            )
             for r in requests
         ], tag
 
@@ -983,6 +1000,7 @@ def cancel_pending_payment(
         raise HTTPException(404, "Unknown request")
     require_agent(principal, tx.agent_id, db)
     with agent_transaction(db, GUARD_LOCK):
+        assert_current_principal(principal, db)
         payment = (
             db.query(PaymentRecord)
             .filter_by(request_id=request_id)
@@ -1109,6 +1127,9 @@ app.include_router(secured)
 from app.api.risk import router as risk_router
 
 app.include_router(risk_router)
+from app.api.authority import router as authority_router
+
+app.include_router(authority_router)
 
 
 @app.get(

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import statistics
+import sys
 import subprocess
 import time
 import urllib.error
@@ -16,6 +17,9 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+from app.schema_version import SCHEMA_REVISION
+
 if os.environ.get("SENTINEL_ACCEPTANCE") != "1" or not os.environ.get(
     "COMPOSE_PROJECT_NAME", ""
 ).startswith("sentinel-ci-"):
@@ -151,6 +155,47 @@ report["timings"]["http_mock"] = {
     "p95_ms": round(latencies[int(0.95 * (len(latencies) - 1))], 2),
 }
 check("http_concurrency", all(s == 200 for s, _ in results))
+
+# Shared authority is independent of per-replica environment snapshots.
+created = http(
+    "/api/credentials",
+    {
+        "subject": "ci-agent",
+        "action": "create",
+        "expected_version": 0,
+        "role": "agent",
+        "agent_ids": [agent],
+    },
+)
+check("shared_credential_issue", created[0] == 200)
+agent_key = created[1]["credential"]
+
+
+def scoped_me(key):
+    req = urllib.request.Request(BASE + "/api/auth/me", headers={"X-API-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+check(
+    "shared_credential_authentication",
+    all(scoped_me(agent_key) == 200 for _ in range(4)),
+)
+check(
+    "shared_credential_revoke",
+    http(
+        "/api/credentials",
+        {"subject": "ci-agent", "action": "revoke", "expected_version": 1},
+    )[0]
+    == 200,
+)
+check(
+    "revocation_reaches_all_replicas",
+    all(scoped_me(agent_key) == 401 for _ in range(4)),
+)
 
 # Freeze at dispatch, then cancel the pending reservation before resuming.
 state = http("/api/risk/overview")[1]
@@ -290,7 +335,7 @@ try:
     )
     check(
         "backup_restore_records_and_schema",
-        int(restored) > 20 and revision == "0003_runtime_safety",
+        int(restored) > 20 and revision == SCHEMA_REVISION,
     )
 finally:
     compose(

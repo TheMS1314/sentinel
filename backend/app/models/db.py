@@ -91,6 +91,7 @@ class TransactionRecord(Base):
     raw_agent_goal = Column(Text, default="")
     scenario_tag = Column(String, default="")
     submitted_by = Column(String, default="internal", nullable=False)
+    submitted_credential_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=now_utc)
     decision = relationship(
         "DecisionRecord", back_populates="transaction", uselist=False
@@ -147,6 +148,7 @@ class PaymentRecord(Base):
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
     dispatch_expires_at = Column(DateTime, default=dispatch_deadline, nullable=True)
     authorization_policy_id = Column(String, nullable=True)
+    authorizing_credential_version = Column(Integer, default=1, nullable=False)
 
 
 class ReviewEvent(Base):
@@ -286,3 +288,17 @@ class EvaluationJob(Base):
     created_at = Column(DateTime, default=now_utc, nullable=False)
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc, nullable=False)
     completed_at = Column(DateTime, nullable=True)
+
+
+class ServiceCredential(Base):
+    __tablename__ = "service_credentials"
+    subject = Column(String, primary_key=True)
+    key_hash = Column(String, nullable=False, unique=True, index=True)
+    role = Column(String, nullable=False)
+    owner_id = Column(String, nullable=False, default="")
+    agent_ids = Column(JSON, nullable=False, default=list)
+    active = Column(Boolean, nullable=False, default=True)
+    expires_at = Column(DateTime, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    updated_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=now_utc)

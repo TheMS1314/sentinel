@@ -25,6 +25,12 @@ from app.core.validation import validate_request, validate_policy, paise, utc_ti
 from app.core.locking import agent_transaction
 from app.core.intelligence import utc
 from app.core.settings import integer
+from app.core.auth import (
+    database_authority,
+    principal_from_row,
+    assert_current_principal,
+)
+from app.models.db import ServiceCredential
 from app.core.intelligence import (
     assess,
     dispatch_permission,
@@ -115,6 +121,7 @@ class SentinelOrchestrator:
         actor_id="internal",
         execute_payment=True,
         work_lease=None,
+        actor_version=1,
     ) -> Decision:
         validate_request(request)
         if request.agent_id != policy.agent_id:
@@ -127,6 +134,7 @@ class SentinelOrchestrator:
             actor_id,
             execute_payment,
             work_lease=work_lease,
+            actor_version=actor_version,
         )
         if isinstance(outcome, SemanticPreparation):
             # No advisory lock, open transaction or checked-out DB connection while
@@ -140,6 +148,7 @@ class SentinelOrchestrator:
                 execute_payment,
                 semantic=(outcome.policy.to_dict(), semantic),
                 work_lease=work_lease,
+                actor_version=actor_version,
             )
         if outcome.verdict == "APPROVE" and execute_payment:
             self.dispatch_payment(request.request_id)
@@ -154,8 +163,27 @@ class SentinelOrchestrator:
         execute_payment,
         semantic=None,
         work_lease=None,
+        actor_version=1,
     ):
         with agent_transaction(self.db, request.agent_id):
+            if actor_id != "internal" and database_authority():
+                row = (
+                    self.db.query(ServiceCredential)
+                    .filter_by(subject=actor_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                principal = principal_from_row(row)
+                if (
+                    principal is None
+                    or principal.credential_version != actor_version
+                    or principal.role not in ("admin", "owner", "agent")
+                    or not principal.permits_agent(request.agent_id, self.db)
+                ):
+                    raise ConflictError(
+                        "Submitting authority changed before authorization"
+                    )
             if work_lease is not None:
                 job = (
                     self.db.query(EvaluationJob)
@@ -250,7 +278,9 @@ class SentinelOrchestrator:
                         decision.checked_rules.append("semantic_policy_changed")
                 else:
                     decision = result_to_decision(request, result)
-                self.audit.log_transaction(request, scenario_tag, actor_id)
+                self.audit.log_transaction(
+                    request, scenario_tag, actor_id, actor_version
+                )
                 if decision.verdict == "APPROVE":
                     score = self.risk_scorer.evaluate(
                         [
@@ -291,6 +321,7 @@ class SentinelOrchestrator:
                             amount_paise=paise(request.amount),
                             state="pending",
                             authorization_policy_id=policy.policy_id,
+                            authorizing_credential_version=actor_version,
                             dispatch_expires_at=processing_time(self.db)
                             + timedelta(
                                 seconds=integer(
@@ -402,6 +433,7 @@ class SentinelOrchestrator:
         *,
         reviewer_id="internal",
         reason="Human review",
+        reviewer_principal=None,
     ):
         if human_verdict not in ("APPROVE", "BLOCK"):
             raise ValueError("human_verdict must be APPROVE or BLOCK")
@@ -409,6 +441,8 @@ class SentinelOrchestrator:
         if not tx:
             raise LookupError("unknown request_id")
         with agent_transaction(self.db, tx.agent_id):
+            if reviewer_principal is not None:
+                assert_current_principal(reviewer_principal, self.db)
             record = (
                 self.db.query(DecisionRecord)
                 .filter_by(request_id=request_id)
@@ -472,6 +506,9 @@ class SentinelOrchestrator:
                         amount_paise=paise(tx.amount),
                         state="pending",
                         authorization_policy_id=policy.policy_id,
+                        authorizing_credential_version=reviewer_principal.credential_version
+                        if reviewer_principal
+                        else 1,
                         dispatch_expires_at=processing_time(self.db)
                         + timedelta(
                             seconds=integer(

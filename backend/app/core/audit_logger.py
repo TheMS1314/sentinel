@@ -30,6 +30,7 @@ class AuditLogger:
         request: TransactionRequest,
         scenario_tag: str = "",
         actor_id: str = "internal",
+        actor_version: int = 1,
     ) -> TransactionRecord:
         record = TransactionRecord(
             request_id=request.request_id,
@@ -43,6 +44,7 @@ class AuditLogger:
             raw_agent_goal=request.raw_agent_goal,
             scenario_tag=scenario_tag,
             submitted_by=actor_id,
+            submitted_credential_version=actor_version,
         )
         self.db.add(record)
         self.db.flush()

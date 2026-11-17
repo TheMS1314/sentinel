@@ -54,6 +54,8 @@ function qs(params) {
 }
 
 export const api = {
+  listCredentials: () => request("/credentials"),
+  changeCredential: (body) => request("/credentials", {method:"POST",body:JSON.stringify(body)}),
   login: (credential) => request("/auth/login", {method: "POST", body: JSON.stringify({credential})}),
   me: () => request("/auth/me"),
   logout: () => request("/auth/logout", {method: "POST"}),

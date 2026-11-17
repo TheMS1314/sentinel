@@ -29,7 +29,8 @@ services:
     env_file: ./backend/.env
     environment:
       SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
-    command: [python, -m, alembic, -c, alembic.ini, upgrade, head]
+      SENTINEL_AUTH_BACKEND: database
+    command: [python, -m, app.ops.initialize]
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +39,7 @@ services:
     env_file: ./backend/.env
     environment: &backend-env
       SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      SENTINEL_AUTH_BACKEND: database
       REDIS_URL: redis://redis:6379/0
       QUEUE_BACKEND: postgres
       RATE_LIMIT_BACKEND: redis

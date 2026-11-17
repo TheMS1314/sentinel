@@ -275,8 +275,12 @@ def confirmed_dispatch_threat(db, request_id):
 def dispatch_authority(db, request_id):
     """An authorization cannot outlive revoked credentials or a replaced policy."""
     import os
-    from app.core.auth import credentials, Principal
-    from app.models.db import DecisionRecord, PaymentRecord
+    from app.core.auth import (
+        principal_for_subject,
+        database_authority,
+        principal_from_row,
+    )
+    from app.models.db import DecisionRecord, PaymentRecord, ServiceCredential
 
     tx, decision = (
         db.query(TransactionRecord, DecisionRecord)
@@ -294,6 +298,25 @@ def dispatch_authority(db, request_id):
         and os.environ.get("SENTINEL_ENV") != "production"
     ):
         return None
+    # All mutation paths lock credential authority before policy records.
+    # This makes revocation linearizable with claims without a reverse lock order.
+    if database_authority():
+        row = (
+            db.query(ServiceCredential)
+            .filter_by(subject=actor)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        principal = principal_from_row(row)
+    else:
+        principal = principal_for_subject(actor)
+    payment = db.get(PaymentRecord, request_id)
+    if (
+        principal is None
+        or principal.credential_version != payment.authorizing_credential_version
+    ):
+        return "Authorizing credential was revoked or rotated before dispatch"
     current = (
         db.query(PolicyRecord)
         .filter_by(agent_id=tx.agent_id, active=True)
@@ -301,19 +324,9 @@ def dispatch_authority(db, request_id):
         .with_for_update()
         .first()
     )
-    payment = db.get(PaymentRecord, request_id)
     bound_policy = payment.authorization_policy_id or decision.policy_id
     if current is None or current.policy_id != bound_policy:
         return "Owner policy changed after approval; cancel and submit a fresh request"
-    row = next((r for r in credentials() if r["subject"] == actor), None)
-    if row is None:
-        return "Authorizing credential was revoked before dispatch"
-    principal = Principal(
-        row["subject"],
-        row["role"],
-        row.get("owner_id", ""),
-        tuple(row.get("agent_ids", [])),
-    )
     roles = (
         ("admin", "owner", "reviewer")
         if decision.human_override == "APPROVE"

@@ -2,7 +2,12 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.core.auth import Principal, require_api_key, require_agent
+from app.core.auth import (
+    Principal,
+    require_api_key,
+    require_agent,
+    assert_current_principal,
+)
 from app.core.rate_limit import enforce_rate_limit
 from app.core.intelligence_schemas import MerchantProfileIn, IndicatorIn, GuardIn
 from app.core.intelligence import (
@@ -96,6 +101,7 @@ def set_guard(
 ):
     principal.require("admin")
     with agent_transaction(db, GUARD_LOCK):
+        assert_current_principal(principal, db)
         row = db.query(DispatchGuard).filter_by(id=1).populate_existing().first()
         before = guard_view(row)
         if body.expected_version != before["version"]:
@@ -134,6 +140,7 @@ def save_merchant(
     principal.require("admin")
     key = merchant_key(body.merchant_name)
     with agent_transaction(db, GUARD_LOCK):
+        assert_current_principal(principal, db)
         row = (
             db.query(MerchantRiskProfile)
             .filter_by(owner_id=body.owner_id, merchant_key=key)
@@ -175,6 +182,7 @@ def save_indicator(
 ):
     principal.require("admin")
     with agent_transaction(db, GUARD_LOCK):
+        assert_current_principal(principal, db)
         row = db.get(ThreatIndicator, body.indicator_id)
         before = evidence_view(row) if row else None
         if row is None:

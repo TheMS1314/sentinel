@@ -13,6 +13,7 @@ os.environ["SENTINEL_DATABASE_URL"] = url or "sqlite:///" + tempfile.mktemp(
     prefix="sentinel-test-", suffix=".sqlite"
 )
 os.environ["SENTINEL_ENV"] = "test"
+os.environ["SENTINEL_AUTH_BACKEND"] = "configured"
 os.environ["QUEUE_BACKEND"] = "memory"
 os.environ["CACHE_BACKEND"] = "memory"
 os.environ["SENTINEL_RATE_LIMIT_REQUESTS"] = "5000"

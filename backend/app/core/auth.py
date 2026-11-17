@@ -11,7 +11,7 @@ import hmac
 import json
 import os
 from fastapi import Request, HTTPException
-from app.models.db import SessionLocal, BrowserSession
+from app.models.db import SessionLocal, BrowserSession, ServiceCredential
 
 DEV_DEFAULT_KEY = "dev-only-insecure-key-change-me"
 
@@ -22,6 +22,7 @@ class Principal:
     role: str
     owner_id: str = ""
     agent_ids: tuple = ()
+    credential_version: int = 1
 
     def require(self, *roles):
         if self.role not in roles:
@@ -74,18 +75,90 @@ def credentials():
     ]
 
 
-def authenticate(key):
-    if not isinstance(key, str) or not key.isascii() or not 1 <= len(key) <= 512:
-        raise HTTPException(401, "Missing or invalid credential")
+def database_authority():
+    backend = os.environ.get("SENTINEL_AUTH_BACKEND", "configured")
+    if os.environ.get("SENTINEL_ENV") == "production" and backend != "database":
+        raise RuntimeError("Production requires shared database credential authority")
+    if backend not in ("configured", "database"):
+        raise RuntimeError("Unknown SENTINEL_AUTH_BACKEND")
+    return backend == "database"
+
+
+def principal_from_row(row):
+    if (
+        not row
+        or not row.active
+        or (
+            row.expires_at
+            and row.expires_at.replace(tzinfo=timezone.utc)
+            <= datetime.now(timezone.utc)
+        )
+    ):
+        return None
+    return Principal(
+        row.subject, row.role, row.owner_id, tuple(row.agent_ids), row.version
+    )
+
+
+def principal_for_subject(subject):
+    if database_authority():
+        with SessionLocal() as db:
+            return principal_from_row(db.get(ServiceCredential, subject))
+    item = next((r for r in credentials() if r["subject"] == subject), None)
+    return (
+        Principal(
+            item["subject"],
+            item["role"],
+            item.get("owner_id", ""),
+            tuple(item.get("agent_ids", [])),
+        )
+        if item
+        else None
+    )
+
+
+def principal_for_fingerprint(fingerprint, db=None):
+    if database_authority():
+        if db is not None:
+            return principal_from_row(
+                db.query(ServiceCredential).filter_by(key_hash=fingerprint).first()
+            )
+        with SessionLocal() as owned:
+            return principal_from_row(
+                owned.query(ServiceCredential).filter_by(key_hash=fingerprint).first()
+            )
     for item in credentials():
-        if hmac.compare_digest(key, item["key"]):
+        if hmac.compare_digest(digest(item["key"]), fingerprint):
             return Principal(
                 item["subject"],
                 item["role"],
                 item.get("owner_id", ""),
                 tuple(item.get("agent_ids", [])),
             )
-    raise HTTPException(401, "Missing or invalid credential")
+    return None
+
+
+def authenticate(key):
+    if not isinstance(key, str) or not key.isascii() or not 1 <= len(key) <= 512:
+        raise HTTPException(401, "Missing or invalid credential")
+    principal = principal_for_fingerprint(digest(key))
+    if principal is None:
+        raise HTTPException(401, "Missing or invalid credential")
+    return principal
+
+
+def validate_authority():
+    if database_authority():
+        with SessionLocal() as db:
+            rows = (
+                db.query(ServiceCredential).filter_by(role="admin", active=True).all()
+            )
+            if not any(principal_from_row(row) for row in rows):
+                raise RuntimeError(
+                    "Bootstrap an active administrator credential before serving requests"
+                )
+    else:
+        credentials()
 
 
 def digest(value):
@@ -105,11 +178,7 @@ def require_api_key(request: Request):
                 tzinfo=timezone.utc
             ) <= datetime.now(timezone.utc):
                 raise HTTPException(401, "Sign in required")
-            principal = None
-            for item in credentials():
-                if hmac.compare_digest(digest(item["key"]), session.credential_hash):
-                    principal = authenticate(item["key"])
-                    break
+            principal = principal_for_fingerprint(session.credential_hash, db=db)
             if principal is None:
                 raise HTTPException(401, "Credential revoked")
         finally:
@@ -129,3 +198,19 @@ def require_api_key(request: Request):
 def require_agent(principal, agent_id, db):
     if not principal.permits_agent(agent_id, db):
         raise HTTPException(403, "Agent outside credential scope")
+
+
+def assert_current_principal(principal, db):
+    if not database_authority():
+        return
+    row = (
+        db.query(ServiceCredential)
+        .filter_by(subject=principal.subject)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if principal_from_row(row) != principal:
+        raise HTTPException(
+            401, "Credential was revoked or changed during the operation"
+        )
