@@ -1,22 +1,4 @@
-"""
-Rate Limiting
-==============
-A simple per-API-key sliding-window rate limiter. Applied as a FastAPI
-dependency alongside require_api_key -- every authenticated caller gets
-its own budget, so one noisy/misbehaving caller (or a bug in a
-purchasing agent that starts hammering the API) can't starve every
-other agent's access to the trust layer that's supposed to be
-protecting them.
-
-Design: in-memory sliding window (deque of timestamps per key),
-sufficient for a single-process instance. For the multi-replica
-deployment, this would need to move to Redis (INCR + EXPIRE, or a
-Lua script for atomicity) so the limit is enforced across all
-replicas rather than per-replica -- documented here as the same kind
-of "shared backend" step already taken for cache.py and job_queue.py,
-not implemented, since it's not needed to demonstrate the core
-rate-limiting behavior.
-"""
+"""Subject-scoped atomic Redis quotas; bounded local fallback for development only."""
 
 from __future__ import annotations
 import time
@@ -27,6 +9,17 @@ from fastapi import Request, HTTPException
 import asyncio
 import hashlib
 import uuid
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4)
+def shared_client(url):
+    import redis
+
+    return redis.Redis.from_url(
+        url, socket_connect_timeout=2, socket_timeout=2, max_connections=16
+    )
+
 
 RATE_LIMIT_REQUESTS = int(os.environ.get("SENTINEL_RATE_LIMIT_REQUESTS", "60"))
 RATE_LIMIT_WINDOW_SECONDS = int(
@@ -85,12 +78,8 @@ async def enforce_rate_limit(request: Request):
     if os.environ.get("RATE_LIMIT_BACKEND") == "redis":
 
         def check_shared():
-            import redis
-
-            client = redis.Redis.from_url(
-                os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-                socket_connect_timeout=2,
-                socket_timeout=2,
+            client = shared_client(
+                os.environ.get("REDIS_URL", "redis://localhost:6379/0")
             )
             script = """
             local t = redis.call('TIME')

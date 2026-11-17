@@ -9,12 +9,14 @@ branch_labels = depends_on = None
 
 
 def upgrade():
-    from app.models.db import Base
+    from migrations.frozen_schema import v1_metadata
+
+    metadata = v1_metadata()
 
     bind = op.get_bind()
     # Later revisions own their tables; adoption must not create them early.
     core_tables = [
-        Base.metadata.tables[name]
+        metadata.tables[name]
         for name in (
             "policies",
             "transactions",
@@ -28,7 +30,7 @@ def upgrade():
     inspector = sa.inspect(bind)
     tables = set(inspector.get_table_names())
     if "transactions" not in tables:
-        Base.metadata.create_all(bind, tables=core_tables)
+        metadata.create_all(bind, tables=core_tables)
         return
     # Fail before changes if legacy policy history cannot be made unambiguous.
     duplicate = bind.execute(
@@ -42,7 +44,7 @@ def upgrade():
         )
     existing = {c["name"] for c in inspector.get_columns("decisions")}
     additions = [
-        c for c in Base.metadata.tables["decisions"].columns if c.name not in existing
+        c for c in metadata.tables["decisions"].columns if c.name not in existing
     ]
     for column in additions:
         op.add_column("decisions", sa.Column(column.name, column.type, nullable=True))
@@ -91,8 +93,8 @@ def upgrade():
             batch.create_unique_constraint(
                 "uq_policy_agent_version", ["agent_id", "version"]
             )
-    Base.metadata.create_all(bind, tables=core_tables)
-    for index in Base.metadata.tables["transactions"].indexes:
+    metadata.create_all(bind, tables=core_tables)
+    for index in metadata.tables["transactions"].indexes:
         index.create(bind, checkfirst=True)
     # Legacy approvals are conservatively reserved as UNKNOWN. Migration does
     # not call the gateway or assume they were captured. Operators reconcile them.

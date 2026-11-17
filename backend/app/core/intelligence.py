@@ -148,16 +148,20 @@ def assess(db, policy, request):
         .distinct()
     )
     rows = (
-        db.query(TransactionRecord)
-        .filter(
-            TransactionRecord.agent_id.in_(owner_agents),
-            TransactionRecord.created_at >= now - timedelta(minutes=5),
-            TransactionRecord.created_at <= now,
-            TransactionRecord.request_id != request.request_id,
+        (
+            db.query(TransactionRecord)
+            .filter(
+                TransactionRecord.agent_id.in_(owner_agents),
+                TransactionRecord.created_at >= now - timedelta(minutes=5),
+                TransactionRecord.created_at <= now,
+                TransactionRecord.request_id != request.request_id,
+            )
+            .order_by(TransactionRecord.id.desc())
+            .limit(501)
+            .all()
         )
-        .order_by(TransactionRecord.id.desc())
-        .limit(501)
-        .all()
+        if profile is not None
+        else []
     )
     truncated = len(rows) > 500
     matching = [
@@ -183,6 +187,7 @@ def assess(db, policy, request):
         "vendor": vendor,
         "threat": threat,
         "relations": {
+            "enabled": profile is not None,
             "window_seconds": 300,
             "prior_matching_attempts": len(matching),
             "agents_including_current": len(agents),
@@ -264,4 +269,56 @@ def confirmed_dispatch_threat(db, request_id):
         .first()
     ):
         return "Current confirmed threat evidence prevents payment dispatch"
+    return None
+
+
+def dispatch_authority(db, request_id):
+    """An authorization cannot outlive revoked credentials or a replaced policy."""
+    import os
+    from app.core.auth import credentials, Principal
+    from app.models.db import DecisionRecord, PaymentRecord
+
+    tx, decision = (
+        db.query(TransactionRecord, DecisionRecord)
+        .join(DecisionRecord, DecisionRecord.request_id == TransactionRecord.request_id)
+        .filter(TransactionRecord.request_id == request_id)
+        .one()
+    )
+    actor = (
+        decision.resolved_by
+        if decision.human_override == "APPROVE"
+        else tx.submitted_by
+    )
+    if (
+        actor in ("internal", "legacy")
+        and os.environ.get("SENTINEL_ENV") != "production"
+    ):
+        return None
+    current = (
+        db.query(PolicyRecord)
+        .filter_by(agent_id=tx.agent_id, active=True)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    payment = db.get(PaymentRecord, request_id)
+    bound_policy = payment.authorization_policy_id or decision.policy_id
+    if current is None or current.policy_id != bound_policy:
+        return "Owner policy changed after approval; cancel and submit a fresh request"
+    row = next((r for r in credentials() if r["subject"] == actor), None)
+    if row is None:
+        return "Authorizing credential was revoked before dispatch"
+    principal = Principal(
+        row["subject"],
+        row["role"],
+        row.get("owner_id", ""),
+        tuple(row.get("agent_ids", [])),
+    )
+    roles = (
+        ("admin", "owner", "reviewer")
+        if decision.human_override == "APPROVE"
+        else ("admin", "owner", "agent")
+    )
+    if principal.role not in roles or not principal.permits_agent(tx.agent_id, db):
+        return "Authorizing credential no longer permits this agent"
     return None

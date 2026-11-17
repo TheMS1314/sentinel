@@ -82,7 +82,7 @@ class RedisEvaluationQueue:
         for _,job in ipairs(jobs) do
           local jk = ARGV[3] .. 'job:' .. job.job_id
           redis.call('HSET', jk, 'status', 'QUEUED', 'result', '', 'error', '',
-            'submitted_by', job.payload._submitted_by or '', 'attempts', '0')
+            'submitted_by', job.payload._submitted_by or '', 'agent_id', job.payload.agent_id or '', 'attempts', '0')
           redis.call('XADD', KEYS[1], '*', 'envelope', cjson.encode(job))
           if ARGV[4] ~= '' then redis.call('RPUSH', ARGV[3] .. 'batch:' .. ARGV[4], job.job_id) end
         end
@@ -115,6 +115,7 @@ class RedisEvaluationQueue:
             "result": json.loads(data["result"]) if data.get("result") else None,
             "error": data.get("error") or None,
             "submitted_by": data.get("submitted_by", ""),
+            "agent_id": data.get("agent_id", ""),
         }
 
     def get_batch(self, batch_id):
@@ -242,13 +243,22 @@ class RedisEvaluationQueue:
 
 
 def make_queue(submit_fn, num_workers=4):
-    if os.environ.get("QUEUE_BACKEND", "memory") == "redis":
+    backend = os.environ.get("QUEUE_BACKEND", "memory")
+    if os.environ.get("SENTINEL_ENV") == "production" and backend != "postgres":
+        raise RuntimeError("Production requires the authoritative PostgreSQL queue")
+    if backend == "postgres":
+        from app.core.postgres_queue import PostgresEvaluationQueue
+
+        return PostgresEvaluationQueue(submit_fn, num_workers)
+    if backend == "redis":
         # Never silently fall back: replicas must agree on queue ownership.
         return RedisEvaluationQueue(
             submit_fn,
             num_workers,
             os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
         )
+    if backend != "memory":
+        raise RuntimeError("Unknown QUEUE_BACKEND")
     from app.core.job_queue import EvaluationQueue
 
     return EvaluationQueue(submit_fn, num_workers)

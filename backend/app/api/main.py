@@ -12,13 +12,16 @@ import logging
 import os
 import secrets
 import uuid
+import time
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from app.core.http_limits import RequestLimitsMiddleware
 from sqlalchemy import func, text
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel, Field
 from app.models.db import (
@@ -49,8 +52,12 @@ from app.core.schemas import (
     BatchEvaluateIn,
     HoldResolutionIn,
     SimulateIn,
+    PaymentCancelIn,
+    ReconcileIn,
 )
 from app.core.redis_queue import make_queue
+from app.core.settings import integer
+from app.core.queue_errors import QueueCapacityError
 from app.agents.purchasing_agent import PurchasingAgent
 
 logger = logging.getLogger("sentinel.api")
@@ -59,6 +66,7 @@ logger = logging.getLogger("sentinel.api")
 def _process_single_evaluation(payload):
     payload = dict(payload)
     scope = payload.pop("_submitted_by", None)
+    work_lease = payload.pop("_job_lease", None)
     if scope:
         row = next((r for r in credentials() if r["subject"] == scope), None)
         if not row:
@@ -78,7 +86,11 @@ def _process_single_evaluation(payload):
         return (
             SentinelOrchestrator(db)
             .evaluate_transaction(
-                policy, request, scenario, actor_id=scope or "internal"
+                policy,
+                request,
+                scenario,
+                actor_id=scope or "internal",
+                work_lease=work_lease,
             )
             .__dict__
         )
@@ -86,35 +98,53 @@ def _process_single_evaluation(payload):
         db.close()
 
 
-eval_queue = make_queue(_process_single_evaluation, num_workers=4)
+eval_queue = make_queue(
+    _process_single_evaluation,
+    num_workers=integer("SENTINEL_QUEUE_WORKERS", 4, maximum=16),
+)
 
 
-async def recover_outbox():
-    while True:
+async def recover_outbox(stop):
+    def load():
+        from app.core.payment_recovery import recover_stale_dispatches
 
-        def drain():
-            db = SessionLocal()
-            try:
-                ids = [
-                    r[0]
-                    for r in db.query(PaymentRecord.request_id)
-                    .filter_by(state="pending")
-                    .order_by(
-                        PaymentRecord.updated_at.asc(), PaymentRecord.request_id.asc()
-                    )
-                    .limit(50)
-                    .all()
-                ]
-                for rid in ids:
-                    SentinelOrchestrator(db).dispatch_payment(rid)
-            finally:
-                db.close()
+        with SessionLocal() as db:
+            recover_stale_dispatches(db)
+            return [
+                r[0]
+                for r in db.query(PaymentRecord.request_id)
+                .filter_by(state="pending")
+                .order_by(
+                    PaymentRecord.updated_at.asc(), PaymentRecord.request_id.asc()
+                )
+                .limit(8)
+            ]
 
+    def dispatch_one(rid):
+        with SessionLocal() as db:
+            SentinelOrchestrator(db).dispatch_payment(rid)
+
+    while not stop.is_set():
         try:
-            await asyncio.to_thread(drain)
+            ids = await asyncio.to_thread(load)
+            # Separate sessions per task; bounded parallel IO does not let one
+            # slow provider response stall an entire recovery batch.
+            for start in range(0, len(ids), 4):
+                if stop.is_set():
+                    break
+                await asyncio.gather(
+                    *(
+                        asyncio.to_thread(dispatch_one, rid)
+                        for rid in ids[start : start + 4]
+                    )
+                )
+            app.state.outbox_last_tick = time.monotonic()
         except Exception:
             logger.exception("Payment outbox recovery failed")
-        await asyncio.sleep(5)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=5)
+        except TimeoutError:
+            pass
 
 
 @asynccontextmanager
@@ -141,18 +171,46 @@ async def lifespan(app):
                 "Production profile requires explicit HTTPS browser origins"
             )
     if os.environ.get("SENTINEL_ENV") == "production":
-        for name in ("QUEUE_BACKEND", "RATE_LIMIT_BACKEND"):
-            if os.environ.get(name) != "redis":
-                raise RuntimeError(f"Production requires {name}=redis")
+        if os.environ.get("QUEUE_BACKEND") != "postgres":
+            raise RuntimeError("Production requires QUEUE_BACKEND=postgres")
+        if os.environ.get("RATE_LIMIT_BACKEND") != "redis":
+            raise RuntimeError("Production requires RATE_LIMIT_BACKEND=redis")
+        hosts = os.environ.get("SENTINEL_ALLOWED_HOSTS", "").split(",")
+        if not hosts or any(not h or "*" in h for h in hosts):
+            raise RuntimeError("Production requires explicit SENTINEL_ALLOWED_HOSTS")
+        if len(os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")) < 32:
+            raise RuntimeError("Production requires a 32+ character webhook secret")
+        if not os.environ.get("LLM_MODEL"):
+            raise RuntimeError("Production requires an explicit LLM_MODEL")
+    if (
+        os.environ.get("SENTINEL_ENV") == "production"
+        or os.environ.get("SENTINEL_REQUIRE_MIGRATIONS") == "1"
+    ):
+        with SessionLocal() as db:
+            version = db.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            if version != "0003_runtime_safety":
+                raise RuntimeError(
+                    "Apply the current Alembic migration before serving traffic"
+                )
     await eval_queue.start()
-    task = asyncio.create_task(recover_outbox())
+    stop = asyncio.Event()
+    task = asyncio.create_task(recover_outbox(stop))
     app.state.outbox_task = task
+    app.state.outbox_last_tick = time.monotonic()
     try:
         yield
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await eval_queue.stop()
+        stop.set()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(asyncio.shield(task), eval_queue.stop()),
+                timeout=integer("SENTINEL_SHUTDOWN_SECONDS", 30, maximum=60) + 2,
+            )
+        except TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
@@ -164,6 +222,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key", "X-Sentinel-CSRF", "X-Request-ID"],
+)
+app.add_middleware(RequestLimitsMiddleware)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=os.environ.get("SENTINEL_ALLOWED_HOSTS", "*").split(","),
 )
 app.add_middleware(StructuredLoggingMiddleware)
 
@@ -195,6 +258,15 @@ async def validation_error(request, exc):
     )
 
 
+@app.exception_handler(QueueCapacityError)
+async def queue_full(request, exc):
+    return JSONResponse(
+        status_code=503,
+        content={"error": {"message": str(exc), "status_code": 503}},
+        headers={"Retry-After": "1"},
+    )
+
+
 @app.exception_handler(ConflictError)
 async def conflict(request, exc):
     return JSONResponse(
@@ -217,6 +289,7 @@ async def database_error(request, exc):
         content={
             "error": {"message": "Database temporarily unavailable", "status_code": 503}
         },
+        headers={"Retry-After": "1"},
     )
 
 
@@ -462,7 +535,10 @@ def list_transactions(
     original implementation had.
     """
     query = scoped(
-        db.query(TransactionRecord).options(joinedload(TransactionRecord.decision)),
+        db.query(TransactionRecord).options(
+            joinedload(TransactionRecord.decision),
+            selectinload(TransactionRecord.intelligence),
+        ),
         principal,
         db,
     )
@@ -637,32 +713,26 @@ def resolve_hold(
     )
 
 
+def prepare_batch(body, principal):
+    principal.require("admin", "owner", "agent")
+    with SessionLocal() as db:
+        payloads = []
+        for item in body.requests:
+            require_agent(principal, item.agent_id, db)
+            payload = item.domain(load_policy(item.agent_id, db)).__dict__
+            payload["_submitted_by"] = principal.subject
+            payloads.append(payload)
+        return payloads
+
+
 @secured.post("/transactions/evaluate-batch")
 async def evaluate_batch(
-    body: BatchEvaluateIn,
-    db: Session = Depends(get_session),
-    principal: Principal = Depends(require_api_key),
+    body: BatchEvaluateIn, principal: Principal = Depends(require_api_key)
 ):
-    principal.require("admin", "owner", "agent")
-    payloads = []
-    for item in body.requests:
-        require_agent(principal, item.agent_id, db)
-        payload = item.domain(load_policy(item.agent_id, db)).__dict__
-        payload["_submitted_by"] = principal.subject
-        payloads.append(payload)
+    payloads = await asyncio.to_thread(prepare_batch, body, principal)
     batch_id = f"batch_{uuid.uuid4().hex}"
     ids = await eval_queue.enqueue_batch(payloads, batch_id)
     return {"batch_id": batch_id, "job_ids": ids, "queued": len(ids)}
-
-
-def check_job_scope(job, principal):
-    owner = (
-        job.get("submitted_by")
-        if isinstance(job, dict)
-        else getattr(job, "submitted_by", None)
-    )
-    if principal.role != "admin" and owner != principal.subject:
-        raise HTTPException(403, "Job outside credential scope")
 
 
 def scenario_requests(body, db, principal):
@@ -708,18 +778,21 @@ def simulate(
     }
 
 
+def prepare_simulation(body, principal):
+    with SessionLocal() as db:
+        _, requests, tag = scenario_requests(body, db, principal)
+        return [
+            dict(r.__dict__, scenario_tag=tag, _submitted_by=principal.subject)
+            for r in requests
+        ], tag
+
+
 @secured.post("/simulate-async")
 async def simulate_async(
-    body: SimulateIn,
-    db: Session = Depends(get_session),
-    principal: Principal = Depends(require_api_key),
+    body: SimulateIn, principal: Principal = Depends(require_api_key)
 ):
-    policy, requests, tag = scenario_requests(body, db, principal)
+    payloads, tag = await asyncio.to_thread(prepare_simulation, body, principal)
     batch_id = f"batch_{uuid.uuid4().hex}"
-    payloads = [
-        dict(r.__dict__, scenario_tag=tag, _submitted_by=principal.subject)
-        for r in requests
-    ]
     ids = await eval_queue.enqueue_batch(payloads, batch_id)
     return {"batch_id": batch_id, "job_ids": ids, "scenario_tag": tag}
 
@@ -754,31 +827,49 @@ def queue_stats(principal: Principal = Depends(require_api_key)):
     return eval_queue.stats()
 
 
-def visible_job(job, principal):
+def visible_job(job, principal, db):
     if not isinstance(job, dict):
         job = dict(job.__dict__, status=job.status.value)
     if principal.role != "admin" and job.get("submitted_by") != principal.subject:
         raise HTTPException(403, "Job outside credential scope")
+    if principal.role != "admin":
+        if not job.get("agent_id"):
+            raise HTTPException(403, "Legacy job has no verifiable agent scope")
+        require_agent(principal, job["agent_id"], db)
     return {k: v for k, v in job.items() if k not in ("submitted_by", "completed_at")}
 
 
 @secured.get("/jobs/{job_id}")
-def job_status(job_id: str, principal: Principal = Depends(require_api_key)):
+def job_status(
+    job_id: str,
+    principal: Principal = Depends(require_api_key),
+    db: Session = Depends(get_session),
+):
     job = eval_queue.get_job(job_id)
     if job is None:
         raise HTTPException(404, "Unknown job_id")
-    return visible_job(job, principal)
+    return visible_job(job, principal, db)
 
 
 @secured.get("/jobs/batch/{batch_id}")
-def batch_status(batch_id: str, principal: Principal = Depends(require_api_key)):
+def batch_status(
+    batch_id: str,
+    principal: Principal = Depends(require_api_key),
+    db: Session = Depends(get_session),
+):
     batch = eval_queue.get_batch(batch_id)
     if batch is None:
         raise HTTPException(404, "Unknown batch_id")
-    batch["jobs"] = [visible_job(job, principal) for job in batch["jobs"]]
+    batch["jobs"] = [visible_job(job, principal, db) for job in batch["jobs"]]
     return batch
 
 
+@app.get("/health/live")
+async def liveness():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
 @app.get("/health")
 def health():
     checks = {}
@@ -796,14 +887,29 @@ def health():
         checks["workers"] = "ok" if stats.get("live_workers", 0) > 0 else "unavailable"
     except Exception:
         checks["queue"], checks["workers"] = "unavailable", "unavailable"
+    if os.environ.get("RATE_LIMIT_BACKEND") == "redis":
+        try:
+            from app.core.rate_limit import shared_client
+
+            shared_client(
+                os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+            ).ping()
+            checks["quota"] = "ok"
+        except Exception:
+            checks["quota"] = "unavailable"
     outbox = getattr(app.state, "outbox_task", None)
     checks["outbox"] = (
-        "ok" if outbox is not None and not outbox.done() else "unavailable"
+        "ok"
+        if outbox is not None
+        and not outbox.done()
+        and time.monotonic() - getattr(app.state, "outbox_last_tick", 0) < 120
+        else "unavailable"
     )
     ok = (
         checks.get("database") == "ok"
         and checks.get("workers") == "ok"
         and checks["outbox"] == "ok"
+        and checks.get("quota") != "unavailable"
     )
     return JSONResponse(
         status_code=200 if ok else 503,
@@ -821,7 +927,7 @@ def health():
 )
 def reconcile_payment(
     request_id: str,
-    body: dict,
+    body: ReconcileIn,
     db: Session = Depends(get_session),
     principal: Principal = Depends(require_api_key),
 ):
@@ -829,8 +935,10 @@ def reconcile_payment(
     payment = db.get(PaymentRecord, request_id)
     if not payment:
         raise HTTPException(404, "No payment reservation")
+    amount_paise = payment.amount_paise
+    db.rollback()
     result = SentinelOrchestrator(db).gateway.reconcile(
-        str(body.get("order_id", "")), request_id, payment.amount_paise
+        body.order_id, request_id, amount_paise
     )
     payment = (
         db.query(PaymentRecord).filter_by(request_id=request_id).with_for_update().one()
@@ -844,6 +952,51 @@ def reconcile_payment(
     decision.razorpay_status, decision.razorpay_ref = payment.state, payment.order_id
     db.commit()
     return result
+
+
+@app.post(
+    "/payments/{request_id}/cancel",
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+)
+def cancel_pending_payment(
+    request_id: str,
+    body: PaymentCancelIn,
+    db: Session = Depends(get_session),
+    principal: Principal = Depends(require_api_key),
+):
+    from app.core.intelligence import GUARD_LOCK, control_event
+
+    principal.require("admin", "owner")
+    tx = db.query(TransactionRecord).filter_by(request_id=request_id).first()
+    if tx is None:
+        raise HTTPException(404, "Unknown request")
+    require_agent(principal, tx.agent_id, db)
+    with agent_transaction(db, GUARD_LOCK):
+        payment = (
+            db.query(PaymentRecord)
+            .filter_by(request_id=request_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if payment is None or payment.state != "pending":
+            raise ConflictError("Only an undispatched pending payment can be cancelled")
+        payment.state, payment.error = "cancelled", body.reason
+        db.query(DecisionRecord).filter_by(
+            request_id=request_id
+        ).one().razorpay_status = "cancelled"
+        control_event(
+            db,
+            principal.subject,
+            "payment_cancel",
+            request_id,
+            {"state": "pending"},
+            {"state": "cancelled", "reason": body.reason},
+        )
+    return {
+        "status": "cancelled",
+        "note": "Undispatched reservation released; original decision retained",
+    }
 
 
 @app.get(
@@ -864,53 +1017,81 @@ def pending_reconciliation(
 
 
 @app.post("/payments/webhook")
-async def provider_webhook(request: Request, db: Session = Depends(get_session)):
-    import hashlib
-    import hmac
-    from app.models.db import ProviderEvent
-
-    secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+async def provider_webhook(request: Request):
     raw = await request.body()
-    if len(raw) > 65536:
-        raise HTTPException(413, "Webhook too large")
-    signature = request.headers.get("X-Razorpay-Signature", "")
-    if not secret or not hmac.compare_digest(
-        hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), signature
-    ):
-        raise HTTPException(401, "Invalid webhook signature")
-    event = json.loads(raw)
-    event_id = (
-        request.headers.get("X-Razorpay-Event-Id") or hashlib.sha256(raw).hexdigest()
+    return await asyncio.to_thread(
+        record_provider_event,
+        raw,
+        request.headers.get("X-Razorpay-Signature", ""),
+        request.headers.get("X-Razorpay-Event-Id", ""),
     )
-    entity = event.get("payload", {}).get("payment", {}).get("entity", {})
-    if event.get("event") != "payment.captured":
-        return {"status": "ignored"}
-    payment = (
-        db.query(PaymentRecord)
-        .filter_by(order_id=entity.get("order_id"))
-        .with_for_update()
-        .first()
-    )
-    if (
-        not payment
-        or entity.get("amount") != payment.amount_paise
-        or entity.get("currency") != "INR"
-    ):
-        raise HTTPException(409, "Unknown order or mismatched amount")
-    existing_event = db.get(ProviderEvent, event_id)
-    if existing_event:
-        if existing_event.payload_hash != hashlib.sha256(raw).hexdigest():
-            raise HTTPException(409, "Event ID is already bound to different data")
-        return {"status": "duplicate"}
-    payment.state = "captured"
-    db.query(DecisionRecord).filter_by(
-        request_id=payment.request_id
-    ).one().razorpay_status = "captured"
-    db.add(
-        ProviderEvent(event_id=event_id, payload_hash=hashlib.sha256(raw).hexdigest())
-    )
-    db.commit()
-    return {"status": "recorded"}
+
+
+def record_provider_event(raw, signature, event_id):
+    with SessionLocal() as db:
+        import hashlib
+        import hmac
+        from app.models.db import ProviderEvent
+
+        secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+        if len(raw) > 65536:
+            raise HTTPException(413, "Webhook too large")
+        import re
+
+        if (
+            not secret
+            or not re.fullmatch(r"[a-fA-F0-9]{64}", signature)
+            or not hmac.compare_digest(
+                hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), signature
+            )
+        ):
+            raise HTTPException(401, "Invalid webhook signature")
+        event = json.loads(raw)
+        if not isinstance(event, dict):
+            raise HTTPException(422, "Invalid webhook event")
+        event_id = event_id or hashlib.sha256(raw).hexdigest()
+        if len(event_id) > 128:
+            raise HTTPException(422, "Invalid provider event ID")
+        if event.get("event") != "payment.captured":
+            return {"status": "ignored"}
+        try:
+            entity = event["payload"]["payment"]["entity"]
+            if (
+                not isinstance(entity, dict)
+                or type(entity.get("amount")) is not int
+                or not isinstance(entity.get("order_id"), str)
+            ):
+                raise ValueError("Invalid capture entity")
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(422, "Invalid capture entity") from None
+        payment = (
+            db.query(PaymentRecord)
+            .filter_by(order_id=entity.get("order_id"))
+            .with_for_update()
+            .first()
+        )
+        if (
+            not payment
+            or entity.get("amount") != payment.amount_paise
+            or entity.get("currency") != "INR"
+        ):
+            raise HTTPException(409, "Unknown order or mismatched amount")
+        existing_event = db.get(ProviderEvent, event_id)
+        if existing_event:
+            if existing_event.payload_hash != hashlib.sha256(raw).hexdigest():
+                raise HTTPException(409, "Event ID is already bound to different data")
+            return {"status": "duplicate"}
+        payment.state = "captured"
+        db.query(DecisionRecord).filter_by(
+            request_id=payment.request_id
+        ).one().razorpay_status = "captured"
+        db.add(
+            ProviderEvent(
+                event_id=event_id, payload_hash=hashlib.sha256(raw).hexdigest()
+            )
+        )
+        db.commit()
+        return {"status": "recorded"}
 
 
 app.include_router(secured)

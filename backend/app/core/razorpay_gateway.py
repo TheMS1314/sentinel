@@ -43,7 +43,8 @@ class RazorpayGateway:
                     "currency": "INR",
                     "receipt": receipt,
                     "notes": dict(notes, sentinel_request_id=request_id),
-                }
+                },
+                timeout=(3.05, 10),
             )
             if not order or not order.get("id"):
                 return {
@@ -59,11 +60,16 @@ class RazorpayGateway:
                 "order_id": None,
                 "error": "Reconciliation required",
             }
+        finally:
+            self.client.session.close()
 
     def reconcile(self, order_id, request_id, amount_paise):
         if self.mock_mode:
             raise ValueError("Provider reconciliation requires test credentials")
-        order = self.client.order.fetch(order_id)
+        try:
+            order = self.client.order.fetch(order_id, timeout=(3.05, 10))
+        finally:
+            self.client.session.close()
         if (
             order.get("amount") != amount_paise
             or order.get("currency") != "INR"

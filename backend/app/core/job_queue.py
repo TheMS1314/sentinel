@@ -25,6 +25,7 @@ class Job:
     result: dict | None = None
     error: str | None = None
     submitted_by: str = ""
+    agent_id: str = ""
     completed_at: float | None = None
 
 
@@ -72,6 +73,7 @@ class EvaluationQueue:
             job_id=job_id,
             status=JobStatus.QUEUED,
             submitted_by=payload.get("_submitted_by", ""),
+            agent_id=payload.get("agent_id", ""),
         )
         async with self._lock:
             self._jobs[job_id] = job
@@ -125,6 +127,7 @@ class EvaluationQueue:
                     "result": j.result,
                     "error": j.error,
                     "submitted_by": j.submitted_by,
+                    "agent_id": j.agent_id,
                 }
                 for j in jobs
             ],

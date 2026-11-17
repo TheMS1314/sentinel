@@ -21,6 +21,10 @@ from __future__ import annotations
 import os
 import json
 import logging
+from threading import BoundedSemaphore
+from app.core.settings import integer
+
+_LIVE_SLOTS = BoundedSemaphore(integer("SENTINEL_LLM_CONCURRENCY", 4, maximum=16))
 
 logger = logging.getLogger("sentinel.llm_client")
 
@@ -32,34 +36,15 @@ class LLMClient:
         self.mock_mode = False
         self._client = None
 
-        if self.provider == "anthropic":
-            key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if not key:
-                self.mock_mode = True
-            else:
-                import anthropic
-
-                self._client = anthropic.Anthropic(
-                    api_key=key, timeout=15.0, max_retries=0
-                )
-
-        elif self.provider == "openrouter":
-            key = os.environ.get("OPENROUTER_API_KEY", "")
-            if not key:
-                self.mock_mode = True
-            else:
-                # OpenRouter is OpenAI-API-compatible
-                from openai import OpenAI
-
-                self._client = OpenAI(
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key=key,
-                    timeout=15.0,
-                    max_retries=0,
-                )
-        else:
-            raise ValueError(f"Unknown LLM_PROVIDER: {self.provider}")
-
+        if self.provider not in ("anthropic", "openrouter"):
+            raise ValueError("Unknown LLM_PROVIDER")
+        key_name = (
+            "ANTHROPIC_API_KEY"
+            if self.provider == "anthropic"
+            else "OPENROUTER_API_KEY"
+        )
+        self._key = os.environ.get(key_name, "")
+        self.mock_mode = not bool(self._key)
         if self.mock_mode:
             logger.warning(
                 f"LLMClient running in MOCK MODE (provider={self.provider}, "
@@ -67,6 +52,47 @@ class LLMClient:
             )
 
     def complete_json(
+        self, system_prompt: str, user_prompt: str, mock_response: dict
+    ) -> dict:
+        if self.mock_mode:
+            return self._complete_json(system_prompt, user_prompt, mock_response)
+        if not _LIVE_SLOTS.acquire(blocking=False):
+            return {"error": "llm_capacity_unavailable"}
+        owned = False
+        try:
+            if self._client is None:
+                timeout = integer("SENTINEL_LLM_TIMEOUT_SECONDS", 10, maximum=30)
+                if self.provider == "anthropic":
+                    import anthropic
+
+                    self._client = anthropic.Anthropic(
+                        api_key=self._key, timeout=timeout, max_retries=0
+                    )
+                else:
+                    from openai import OpenAI
+
+                    self._client = OpenAI(
+                        base_url="https://openrouter.ai/api/v1",
+                        api_key=self._key,
+                        timeout=timeout,
+                        max_retries=0,
+                    )
+                owned = True
+            return self._complete_json(system_prompt, user_prompt, mock_response)
+        except Exception:
+            logger.warning("LLM client initialization failed")
+            return {"error": "llm_call_failed"}
+        finally:
+            try:
+                if owned:
+                    self._client.close()
+                    self._client = None
+            except Exception:
+                logger.warning("LLM transport close failed")
+            finally:
+                _LIVE_SLOTS.release()
+
+    def _complete_json(
         self, system_prompt: str, user_prompt: str, mock_response: dict
     ) -> dict:
         """
@@ -200,18 +226,23 @@ class LLMClient:
             except Exception as e:
                 if attempt < max_attempts:
                     logger.warning(
-                        f"Live LLM call failed ({self.provider}), "
-                        f"attempt {attempt}/{max_attempts}: {e}. Retrying."
+                        "Live LLM call failed (%s), attempt %s/%s (%s)",
+                        self.provider,
+                        attempt,
+                        max_attempts,
+                        type(e).__name__,
                     )
                     continue
 
                 logger.error(
-                    f"Live LLM call failed ({self.provider}) after "
-                    f"{max_attempts} attempts: {e}"
+                    "Live LLM call failed (%s) after %s attempts (%s)",
+                    self.provider,
+                    max_attempts,
+                    type(e).__name__,
                 )
                 return {
                     "error": "llm_call_failed",
-                    "detail": str(e)[:300],
+                    "detail": "Provider unavailable or unusable response",
                 }
 
         return {"error": "llm_call_failed", "detail": "unknown LLM failure"}
@@ -262,5 +293,5 @@ class LLMClient:
             except json.JSONDecodeError:
                 pass
 
-        logger.error(f"LLM response was not valid JSON: {text[:300]}")
+        logger.error("LLM response was not valid JSON")
         return {"error": "invalid_json", "raw": text[:500]}

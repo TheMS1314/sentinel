@@ -186,8 +186,21 @@ def test_block_cannot_be_human_approved(db):
     assert db.get(PaymentRecord, r.request_id) is None
 
 
-def test_review_once_and_preserves_original(db):
+def test_review_once_and_preserves_original(db, monkeypatch):
     p = policy(db)
+    monkeypatch.setenv(
+        "SENTINEL_CREDENTIALS",
+        json.dumps(
+            [
+                {
+                    "key": "r" * 40,
+                    "subject": "reviewer",
+                    "role": "reviewer",
+                    "owner_id": p.owner_human_id,
+                }
+            ]
+        ),
+    )
     r = request(p, stated_intent="unclear purpose")
     o = SentinelOrchestrator(db)
     assert o.evaluate_transaction(p, r).verdict == "HOLD"

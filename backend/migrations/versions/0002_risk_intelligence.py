@@ -8,7 +8,9 @@ branch_labels = depends_on = None
 
 
 def upgrade():
-    from app.models.db import Base
+    from migrations.frozen_schema import v2_metadata
+
+    metadata = v2_metadata()
 
     bind = op.get_bind()
     for name in (
@@ -19,7 +21,7 @@ def upgrade():
         "dispatch_claims",
         "risk_control_events",
     ):
-        Base.metadata.tables[name].create(bind, checkfirst=True)
+        metadata.tables[name].create(bind, checkfirst=True)
 
 
 def downgrade():

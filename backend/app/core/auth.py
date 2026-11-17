@@ -88,7 +88,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-async def require_api_key(request: Request):
+def require_api_key(request: Request):
     key = request.headers.get("X-API-Key", "")
     if key:
         principal = authenticate(key)

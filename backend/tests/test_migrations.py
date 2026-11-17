@@ -148,5 +148,5 @@ def test_upgrades_already_hardened_schema(migration_database):
             conn.execute(
                 sa.text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            == "0002_risk_intelligence"
+            == "0003_runtime_safety"
         )

@@ -35,13 +35,10 @@ def now_utc():
 DATABASE_URL = os.environ.get(
     "SENTINEL_DATABASE_URL", "postgresql://sentinel:sentinel@localhost:5432/sentinel"
 )
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    connect_args={"check_same_thread": False, "timeout": 30}
-    if DATABASE_URL.startswith("sqlite")
-    else {},
-)
+from app.core.settings import database_options, dispatch_deadline
+
+engine = create_engine(DATABASE_URL, **database_options(DATABASE_URL))
+
 if DATABASE_URL.startswith("sqlite"):
 
     @event.listens_for(engine, "connect")
@@ -80,6 +77,7 @@ class TransactionRecord(Base):
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_positive_amount"),
         Index("ix_agent_event", "agent_id", "requested_at_iso"),
+        Index("ix_transaction_processing", "agent_id", "created_at"),
     )
     id = Column(Integer, primary_key=True)
     request_id = Column(String, unique=True, index=True, nullable=False)
@@ -92,12 +90,13 @@ class TransactionRecord(Base):
     stated_intent = Column(Text, nullable=False)
     raw_agent_goal = Column(Text, default="")
     scenario_tag = Column(String, default="")
+    submitted_by = Column(String, default="internal", nullable=False)
     created_at = Column(DateTime, default=now_utc)
     decision = relationship(
         "DecisionRecord", back_populates="transaction", uselist=False
     )
     intelligence = relationship(
-        "IntelligenceAssessment", uselist=False, lazy="selectin", passive_deletes=True
+        "IntelligenceAssessment", uselist=False, passive_deletes=True
     )
 
 
@@ -138,6 +137,7 @@ class DecisionRecord(Base):
 
 class PaymentRecord(Base):
     __tablename__ = "payments"
+    __table_args__ = (Index("ix_payment_recovery", "state", "updated_at"),)
     request_id = Column(String, ForeignKey("transactions.request_id"), primary_key=True)
     state = Column(String, default="pending", nullable=False, index=True)
     amount_paise = Column(BigInteger, nullable=False)
@@ -145,6 +145,8 @@ class PaymentRecord(Base):
     order_id = Column(String, unique=True, nullable=True)
     error = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
+    dispatch_expires_at = Column(DateTime, default=dispatch_deadline, nullable=True)
+    authorization_policy_id = Column(String, nullable=True)
 
 
 class ReviewEvent(Base):
@@ -161,6 +163,7 @@ class ReviewEvent(Base):
 
 class BrowserSession(Base):
     __tablename__ = "browser_sessions"
+    __table_args__ = (Index("ix_session_expiry", "expires_at"),)
     token_hash = Column(String, primary_key=True)
     credential_hash = Column(String, nullable=False)
     expires_at = Column(DateTime, nullable=False)
@@ -260,3 +263,26 @@ def get_session():
         yield db
     finally:
         db.close()
+
+
+class EvaluationJob(Base):
+    __tablename__ = "evaluation_jobs"
+    __table_args__ = (
+        Index("ix_job_claim", "status", "lease_expires_at", "created_at"),
+        Index("ix_job_batch", "batch_id", "created_at"),
+        Index("ix_job_retention", "completed_at"),
+    )
+    job_id = Column(String, primary_key=True)
+    batch_id = Column(String, nullable=True)
+    submitted_by = Column(String, nullable=False)
+    agent_id = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String, default="QUEUED", nullable=False)
+    result = Column(JSON, nullable=True)
+    error = Column(String, nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    lease_token = Column(String, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now_utc, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, onupdate=now_utc, nullable=False)
+    completed_at = Column(DateTime, nullable=True)

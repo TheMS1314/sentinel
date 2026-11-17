@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 import uuid
+import os
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from app.core.validation import paise, utc_timestamp
 from app.models.policy import TransactionRequest
@@ -61,6 +62,13 @@ class TransactionIn(StrictModel):
 
     @model_validator(mode="after")
     def valid_time(self):
+        if (
+            os.environ.get("SENTINEL_ENV") == "production"
+            and "request_id" not in self.model_fields_set
+        ):
+            raise ValueError(
+                "Production callers must supply a stable request_id for retries"
+            )
         ts = utc_timestamp(self.requested_at_iso)
         if ts.hour != self.requested_at_hour:
             raise ValueError("requested_at_hour must match UTC timestamp")
@@ -99,3 +107,11 @@ class SimulateIn(StrictModel):
         "merchant_swap",
     ] = "none"
     num_transactions: int = Field(default=5, ge=1, le=10)
+
+
+class PaymentCancelIn(StrictModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class ReconcileIn(StrictModel):
+    order_id: str = Field(min_length=1, max_length=128, pattern=r"^order_[A-Za-z0-9]+$")

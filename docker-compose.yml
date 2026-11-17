@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
   redis:
     image: redis:7-alpine
-    command: [redis-server, --appendonly, 'yes', --appendfsync, everysec]
+    command: [redis-server, --appendonly, 'yes', --appendfsync, everysec, --maxmemory, 256mb, --maxmemory-policy, noeviction]
     volumes:
       - sentinel_redisdata:/data
     healthcheck:
@@ -39,14 +39,17 @@ services:
     environment: &backend-env
       SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
       REDIS_URL: redis://redis:6379/0
-      QUEUE_BACKEND: redis
+      QUEUE_BACKEND: postgres
       RATE_LIMIT_BACKEND: redis
       SENTINEL_INSTANCE_ID: backend1
+      SENTINEL_REQUIRE_MIGRATIONS: '1'
+      SENTINEL_TRUSTED_PROXY_IPS: ${SENTINEL_SUBNET:-172.30.0.0/24}
     depends_on:
       db-init:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    stop_grace_period: 45s
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
@@ -70,3 +73,9 @@ services:
 volumes:
   sentinel_pgdata:
   sentinel_redisdata:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${SENTINEL_SUBNET:-172.30.0.0/24}

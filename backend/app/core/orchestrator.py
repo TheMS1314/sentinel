@@ -1,7 +1,7 @@
 """Transactional authorization, durable payment intent and guarded human review."""
 
-from dataclasses import asdict, fields
-from datetime import datetime, timezone
+from dataclasses import asdict, fields, dataclass
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import update, text
 from app.models.policy import AgentPolicy, TransactionRequest, Decision
@@ -13,6 +13,7 @@ from app.models.db import (
     ReviewEvent,
     IntelligenceAssessment,
     DispatchClaim,
+    EvaluationJob,
 )
 from app.core.rule_engine import RuleEngine, ESCALATE, result_to_decision
 from app.core.llm_reasoner import LLMReasoner
@@ -22,12 +23,15 @@ from app.core.behavioral_baseline import BehavioralBaseline
 from app.core.risk_score import RiskScorer
 from app.core.validation import validate_request, validate_policy, paise, utc_timestamp
 from app.core.locking import agent_transaction
+from app.core.intelligence import utc
+from app.core.settings import integer
 from app.core.intelligence import (
     assess,
     dispatch_permission,
     GUARD_LOCK,
     processing_time,
     confirmed_dispatch_threat,
+    dispatch_authority,
 )
 from app.rag.case_retriever import CaseRetriever, PastCase
 
@@ -39,6 +43,12 @@ class ConflictError(ValueError):
 def decision_from_record(record):
     keys = {f.name for f in fields(Decision)}
     return Decision(**{key: getattr(record, key) for key in keys})
+
+
+@dataclass
+class SemanticPreparation:
+    policy: AgentPolicy
+    request: TransactionRequest
 
 
 class SentinelOrchestrator:
@@ -104,12 +114,65 @@ class SentinelOrchestrator:
         *,
         actor_id="internal",
         execute_payment=True,
+        work_lease=None,
     ) -> Decision:
         validate_request(request)
         if request.agent_id != policy.agent_id:
             raise ValueError("request and policy agent must match")
         validate_policy(policy)
+        outcome = self._evaluate_locked(
+            policy,
+            request,
+            scenario_tag,
+            actor_id,
+            execute_payment,
+            work_lease=work_lease,
+        )
+        if isinstance(outcome, SemanticPreparation):
+            # No advisory lock, open transaction or checked-out DB connection while
+            # the provider runs. The second phase rechecks policy/budget/clock.
+            semantic = self.reasoner.evaluate(outcome.policy, outcome.request)
+            outcome = self._evaluate_locked(
+                policy,
+                request,
+                scenario_tag,
+                actor_id,
+                execute_payment,
+                semantic=(outcome.policy.to_dict(), semantic),
+                work_lease=work_lease,
+            )
+        if outcome.verdict == "APPROVE" and execute_payment:
+            self.dispatch_payment(request.request_id)
+        return outcome
+
+    def _evaluate_locked(
+        self,
+        policy,
+        request,
+        scenario_tag,
+        actor_id,
+        execute_payment,
+        semantic=None,
+        work_lease=None,
+    ):
         with agent_transaction(self.db, request.agent_id):
+            if work_lease is not None:
+                job = (
+                    self.db.query(EvaluationJob)
+                    .filter_by(job_id=work_lease["job_id"])
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if (
+                    job is None
+                    or job.status != "PROCESSING"
+                    or job.lease_token != work_lease["token"]
+                    or utc(job.lease_expires_at) <= processing_time(self.db)
+                ):
+                    raise ConflictError(
+                        "Job lease lost before authorization; durable request state must be checked"
+                    )
             current = (
                 self.db.query(PolicyRecord)
                 .filter_by(agent_id=request.agent_id, active=True)
@@ -118,6 +181,10 @@ class SentinelOrchestrator:
             )
             if current:
                 policy = AgentPolicy.from_dict(current.policy_json)
+            elif actor_id != "internal":
+                raise ConflictError(
+                    "No active policy; authorization requires a current owner policy"
+                )
             existing = (
                 self.db.query(TransactionRecord)
                 .filter_by(request_id=request.request_id)
@@ -159,7 +226,6 @@ class SentinelOrchestrator:
                 history, reserved, attempts = self.audit.evaluation_context(
                     request, policy
                 )
-                self.audit.log_transaction(request, scenario_tag)
                 result = self.rule_engine.evaluate(
                     policy,
                     request,
@@ -168,10 +234,22 @@ class SentinelOrchestrator:
                     attempt_count=attempts,
                 )
                 if result.outcome == ESCALATE:
-                    self._refresh_case_index(request.agent_id, policy, request)
-                    decision = self.reasoner.evaluate(policy, request)
+                    if semantic is None:
+                        self._refresh_case_index(request.agent_id, policy, request)
+                        return SemanticPreparation(
+                            AgentPolicy.from_dict(policy.to_dict()),
+                            TransactionRequest(**asdict(request)),
+                        )
+                    snapshot, decision = semantic
+                    if snapshot != policy.to_dict():
+                        decision.verdict = "HOLD"
+                        decision.reasons = [
+                            "Policy changed during semantic review; a fresh review is required"
+                        ]
+                        decision.checked_rules.append("semantic_policy_changed")
                 else:
                     decision = result_to_decision(request, result)
+                self.audit.log_transaction(request, scenario_tag, actor_id)
                 if decision.verdict == "APPROVE":
                     score = self.risk_scorer.evaluate(
                         [
@@ -211,13 +289,21 @@ class SentinelOrchestrator:
                             request_id=request.request_id,
                             amount_paise=paise(request.amount),
                             state="pending",
+                            authorization_policy_id=policy.policy_id,
+                            dispatch_expires_at=processing_time(self.db)
+                            + timedelta(
+                                seconds=integer(
+                                    "SENTINEL_APPROVAL_TTL_SECONDS",
+                                    300,
+                                    minimum=30,
+                                    maximum=3600,
+                                )
+                            ),
                             budget_day=utc_timestamp(request.requested_at_iso)
                             .date()
                             .isoformat(),
                         )
                     )
-        if decision.verdict == "APPROVE" and execute_payment:
-            self.dispatch_payment(request.request_id)
         return decision
 
     def dispatch_payment(self, request_id):
@@ -234,9 +320,20 @@ class SentinelOrchestrator:
                 return {"status": "not_sent"}
             if payment.state != "pending":
                 return {"status": payment.state, "order_id": payment.order_id}
-            blocked = dispatch_permission(
-                self.db, payment
-            ) or confirmed_dispatch_threat(self.db, request_id)
+            if payment.dispatch_expires_at is None or utc(
+                payment.dispatch_expires_at
+            ) <= processing_time(self.db):
+                payment.state, payment.error = (
+                    "expired",
+                    "Approval expired before dispatch; submit a fresh request",
+                )
+                self.audit.update_razorpay_status(request_id, "expired", None)
+                return {"status": "expired"}
+            blocked = (
+                dispatch_authority(self.db, request_id)
+                or dispatch_permission(self.db, payment)
+                or confirmed_dispatch_threat(self.db, request_id)
+            )
             if blocked:
                 payment.error = blocked
                 payment.updated_at = processing_time(self.db)
@@ -268,15 +365,29 @@ class SentinelOrchestrator:
             )
         except Exception:
             result = {"status": "unknown", "order_id": None}
+        if not isinstance(result, dict):
+            result = {"status": "unknown"}
         status = result.get("status", "unknown")
         if status not in ("mock", "created", "failed", "unknown"):
             status = "unknown"
+        reference = result.get("order_id")
+        if status in ("mock", "created") and (
+            not isinstance(reference, str) or not 1 <= len(reference) <= 200
+        ):
+            result["order_id"], status = None, "unknown"
         payment = (
             self.db.query(PaymentRecord)
             .filter_by(request_id=request_id)
+            .populate_existing()
             .with_for_update()
             .one()
         )
+        # Signed captures and operator reconciliation can finish before this
+        # response. Never overwrite a newer terminal provider state.
+        if payment.state in ("captured", "created", "mock"):
+            outcome = {"status": payment.state, "order_id": payment.order_id}
+            self.db.commit()
+            return outcome
         payment.state, payment.order_id = status, result.get("order_id")
         payment.error = result.get("error")
         self.audit.update_razorpay_status(request_id, status, payment.order_id)
@@ -359,6 +470,16 @@ class SentinelOrchestrator:
                         request_id=request_id,
                         amount_paise=paise(tx.amount),
                         state="pending",
+                        authorization_policy_id=policy.policy_id,
+                        dispatch_expires_at=processing_time(self.db)
+                        + timedelta(
+                            seconds=integer(
+                                "SENTINEL_APPROVAL_TTL_SECONDS",
+                                300,
+                                minimum=30,
+                                maximum=3600,
+                            )
+                        ),
                         budget_day=utc_timestamp(request.requested_at_iso)
                         .date()
                         .isoformat(),
