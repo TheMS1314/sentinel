@@ -229,6 +229,9 @@ async def provider_refresh_loop(stop):
 
 @asynccontextmanager
 async def lifespan(app):
+    from app.core.env import validate_environment
+
+    validate_environment(serving=True)
     validate_authority()  # fail closed on invalid or empty shared authority
     from app.core.llm_client import LLMClient
     from app.core.razorpay_gateway import RazorpayGateway

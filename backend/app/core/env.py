@@ -19,6 +19,7 @@ importing any other app module that reads os.environ.get(...).
 
 from __future__ import annotations
 from pathlib import Path
+import os
 from dotenv import load_dotenv
 
 # backend/.env, resolved relative to this file's own location -- not
@@ -31,6 +32,23 @@ _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 _loaded = False
 
 
+def validate_environment(*, serving=False):
+    value = os.environ.get("SENTINEL_ENV", "development")
+    if value not in {
+        "development",
+        "test",
+        "production",
+        "evaluation",
+        "integration_test",
+    }:
+        raise RuntimeError("Unknown SENTINEL_ENV; choose an explicit supported profile")
+    if serving and value in {"evaluation", "integration_test"}:
+        raise RuntimeError(
+            "Offline evaluation/integration profiles cannot serve the HTTP API"
+        )
+    return value
+
+
 def load_env() -> None:
     """Idempotent -- safe to call from multiple entry points/imports
     without re-parsing the file every time. override=False: a variable
@@ -40,7 +58,7 @@ def load_env() -> None:
     production value.
     """
     global _loaded
-    if _loaded:
-        return
-    load_dotenv(dotenv_path=_ENV_PATH, override=False)
-    _loaded = True
+    if not _loaded:
+        load_dotenv(dotenv_path=_ENV_PATH, override=False)
+        _loaded = True
+    validate_environment()
