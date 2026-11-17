@@ -64,5 +64,11 @@ def validate_production_transport(database_url, redis_url):
     if redis.scheme != "rediss" or not redis.password:
         raise RuntimeError("Production Redis requires authenticated rediss transport")
     options = parse_qs(redis.query)
+    if options.get("ssl_check_hostname", ["true"])[0].lower() not in (
+        "true",
+        "1",
+        "yes",
+    ):
+        raise RuntimeError("Redis TLS hostname verification must remain enabled")
     if options.get("ssl_cert_reqs", ["required"])[0] not in ("required", "2"):
         raise RuntimeError("Redis TLS certificate validation must remain required")

@@ -37,10 +37,14 @@ from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 
 # Never evaluate against application data or invoke a payment provider.
 import tempfile
+import atexit
+import shutil
 
-os.environ["SENTINEL_DATABASE_URL"] = "sqlite:///" + tempfile.mktemp(
-    prefix="sentinel-eval-", suffix=".sqlite"
+_eval_directory = tempfile.mkdtemp(prefix="sentinel-eval-")
+os.environ["SENTINEL_DATABASE_URL"] = "sqlite:///" + os.path.join(
+    _eval_directory, "state.sqlite"
 )
+atexit.register(lambda: shutil.rmtree(_eval_directory, ignore_errors=True))
 os.environ["RAZORPAY_KEY_ID"] = ""
 os.environ["RAZORPAY_KEY_SECRET"] = ""
 os.environ["SENTINEL_ENV"] = "evaluation"
@@ -131,9 +135,15 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
     db = SessionLocal()
     orchestrator = SentinelOrchestrator(db)
 
-    y_true, y_pred, decided_by_list, misses = [], [], [], []
+    if not cases:
+        raise ValueError("An evaluation dataset must contain cases")
+    y_true, y_pred, decided_by_list, misses, predictions = [], [], [], [], []
 
     for case in cases:
+        if case.get("requires_history_review"):
+            raise ValueError(
+                "Feedback candidates must pass explicit independent curation before evaluation"
+            )
         from app.core.validation import validate_request, utc_timestamp
 
         for row in [case["request"], *case["history"]]:
@@ -147,6 +157,9 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
         policy, agent_id = _policy_from_case(case)
         unique_suffix = "_" + uuid.uuid4().hex[:6]
 
+        from app.eval.feedback_replay import seed
+
+        seed(db, case, policy, agent_id, unique_suffix, _request_from_dict)
         # Replay history first (if any) under the same unique agent_id,
         # so velocity/daily-total checks see it, exactly like production would.
         for h in case["history"]:
@@ -160,6 +173,16 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
             policy, request, scenario_tag="golden_eval"
         )
 
+        predictions.append(
+            dict(
+                case_id=case["case_id"],
+                expected=case["expected_verdict"],
+                actual=decision.verdict,
+                risk_score=decision.risk_score,
+                source_created_at=case.get("source_created_at"),
+                curation=case.get("curation"),
+            )
+        )
         y_true.append(case["expected_verdict"])
         y_pred.append(decision.verdict)
         decided_by_list.append(decision.decided_by)
@@ -201,6 +224,9 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "llm_provider": orchestrator.reasoner.llm.provider,
         "runtime": {
+            "source_revision": __import__(
+                "app.ops.provenance", fromlist=["revision"]
+            ).revision(),
             "llm_mode": "mock" if orchestrator.reasoner.llm.mock_mode else "live",
             "model": orchestrator.reasoner.llm.model,
             "prompt_version": __import__(
@@ -239,6 +265,7 @@ def run_eval(dataset_path: str = None, verbose: bool = True) -> dict:
             },
         },
         "misses": misses,
+        "predictions": predictions,
     }
 
     report["safety"] = {
@@ -306,21 +333,27 @@ def _print_report(report: dict):
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+    from pathlib import Path
 
-    dataset_path = sys.argv[1] if len(sys.argv) > 1 else None
-    report = run_eval(dataset_path)
-    out_name = (
-        (
-            "prevalence_eval_report.json"
-            if dataset_path and "prevalence" in dataset_path
-            else "hard_eval_report.json"
-        )
-        if dataset_path
-        else "eval_report.json"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dataset", nargs="?")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+    report = run_eval(args.dataset)
+    default_name = (
+        "eval_report.json"
+        if not args.dataset
+        else "prevalence_eval_report.json"
+        if "prevalence" in args.dataset
+        else "hard_eval_report.json"
     )
-    out_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", out_name)
-    out_path = os.path.abspath(out_path)
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"\nFull report saved to {out_path}")
+    out_path = (
+        Path(args.output)
+        if args.output
+        else Path(__file__).resolve().parents[2] / "data" / default_name
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(report, indent=2) + "\n")
+    out_path.chmod(0o600)
+    print("Full report saved to " + str(out_path))

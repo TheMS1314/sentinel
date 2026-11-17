@@ -111,6 +111,16 @@ def detect(db, quota_ok=True):
     """Bound each scan; a shared transaction lock deduplicates replica detectors."""
     with agent_transaction(db, MONITOR_LOCK):
         candidates = []
+        unknown_count = db.query(PaymentRecord).filter_by(state="unknown").count()
+        if unknown_count > 200:
+            candidates.append(
+                (
+                    "unknown_payment_backlog",
+                    "payment-queue",
+                    "critical",
+                    "Unknown-payment backlog exceeds the individual scan bound; reconcile the entire backlog",
+                )
+            )
         for row in db.query(PaymentRecord).filter_by(state="unknown").limit(200):
             candidates.append(
                 (
@@ -190,6 +200,8 @@ def detect(db, quota_ok=True):
             if incident.kind == "unknown_payment":
                 row = db.get(PaymentRecord, incident.entity_id)
                 cleared = row is not None and row.state != "unknown"
+            elif incident.kind == "unknown_payment_backlog":
+                cleared = unknown_count <= 200
             elif incident.kind == "quota_dependency":
                 cleared = quota_ok
             elif incident.kind == "queue_age":
@@ -235,36 +247,39 @@ def endpoint():
 def claim_delivery(db):
     with agent_transaction(db, MONITOR_LOCK):
         now = processing_time(db)
-        row = (
-            db.query(AlertDelivery)
-            .filter(
-                or_(
-                    and_(
-                        AlertDelivery.state == "pending",
-                        AlertDelivery.next_attempt_at <= now,
-                    ),
-                    and_(
-                        AlertDelivery.state == "processing",
-                        AlertDelivery.lease_expires_at < now,
-                    ),
+        for _ in range(16):
+            row = (
+                db.query(AlertDelivery)
+                .filter(
+                    or_(
+                        and_(
+                            AlertDelivery.state == "pending",
+                            AlertDelivery.next_attempt_at <= now,
+                        ),
+                        and_(
+                            AlertDelivery.state == "processing",
+                            AlertDelivery.lease_expires_at < now,
+                        ),
+                    )
                 )
+                .order_by(AlertDelivery.next_attempt_at)
+                .with_for_update(skip_locked=True)
+                .first()
             )
-            .order_by(AlertDelivery.next_attempt_at)
-            .with_for_update(skip_locked=True)
-            .first()
-        )
-        if row is None:
-            return None
-        if row.attempts >= 5:
-            row.state, row.last_error = (
-                "failed",
-                "Retry budget exhausted; explicit administrator retry required",
-            )
-            return None
-        row.state, row.lease_token = "processing", uuid.uuid4().hex
-        row.lease_expires_at = now + timedelta(seconds=30)
-        row.attempts += 1
-        return row.event_id, row.lease_token, dict(row.payload), row.attempts
+            if row is None:
+                return None
+            if row.attempts >= 5:
+                row.state, row.last_error = (
+                    "failed",
+                    "Retry budget exhausted; explicit administrator retry required",
+                )
+                db.flush()
+                continue
+            row.state, row.lease_token = "processing", uuid.uuid4().hex
+            row.lease_expires_at = now + timedelta(seconds=30)
+            row.attempts += 1
+            return row.event_id, row.lease_token, dict(row.payload), row.attempts
+        return None
 
 
 def deliver_one(db):

@@ -19,13 +19,13 @@ Sentinel now has four complementary layers inspired by payment-risk systems. The
 6. Immediately before claiming payment dispatch, recheck the emergency guard and current confirmed threat evidence under one global PostgreSQL advisory transaction lock.
 7. Persist the dispatch claim and the payment's processing state together, release the lock, then call the test payment provider.
 
-A PASS enrichment result means only that this layer added no restriction. Unknown identity and absent local threat matches are explicitly unknown/partial coverage, not evidence of merchant safety. Merchant names remain caller assertions; a renamed merchant can evade a name-based directory. Trusted merchant identity from a payment/acquirer contract is required before relying on these checks for real money.
+A PASS enrichment result means only that this layer added no restriction. Unknown identity and absent local threat matches are explicitly unknown/partial coverage, not evidence of merchant safety. Production now requires stable owner-scoped merchant IDs; canonical names/categories/domains come from the versioned registry and are rechecked at dispatch. Legacy development requests can still assert names. Trusted merchant identity from a payment/acquirer contract is required before relying on these checks for real money.
 
 ## Evidence and matching
 
 Administrators create merchant/domain bindings for a specific owner. Merchant keys use Unicode NFKC normalization, case folding and collapsed whitespace. Domains accept exact IDNA hostnames, normalize case/trailing dots, and reject URLs, IP addresses, wildcards and ports. Subdomains and suffixes are not assumed equivalent. Sentinel performs no arbitrary URL fetching or scanning.
 
-Threat records are global administrator-owned indicators. They affect a decision only through its owner's merchant profile. Both the mapping and indicator must be operator evidence for a hard block; synthetic evidence produces a hold. Each record has a source, evidence/reason, author, update timestamp and expiry. Expired matching evidence produces a review signal, never a fresh confirmed match. Commercial provider names cannot be submitted as invented local sources.
+Threat records are global administrator-owned indicators. They affect a decision through the owner's merchant profile or registered identity domain. Both the mapping and indicator must be operator evidence for a hard block; synthetic evidence produces a hold. Each record has a source, evidence/reason, author, update timestamp and expiry. Expired matching evidence produces a review signal, never a fresh confirmed match. Commercial provider names cannot be submitted as invented local sources.
 
 The relation check considers at most 500 recent events, from the same owner's agents, using server processing time. It triggers when at least four prior attempts plus the current request involve three or more agents and the same configured merchant within five minutes. The assessment records truncation. This is a coordination warning, not a proven fraud finding; owner accounts are not correlated with each other. Registering a merchant profile enables this check for that merchant.
 
@@ -83,9 +83,9 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 
 Recorded Future documents API token authentication with data/endpoint entitlements determined by licensed modules. RiskRecon documents separately subscribed API access. Mastercard Decision Intelligence and Safety Net require their respective product onboarding and an appropriate payment-system role; this project does not possess a Mastercard network vantage point.
 
-A later licensed connector should run asynchronously: fetch only entitled evidence, validate entity identity and schemas, record provider/observation/fetch times and raw-response hashes, enforce expiry/rate/timeout limits, and publish normalized snapshots. Unavailable or stale required feeds must produce an explicit review state. External intelligence must never override the owner's hard restrictions. No transaction data is sent to these providers by this implementation.
+Read-only Recorded Future/RiskRecon adapters, administrator bindings and refresh controls now implement this path outside authorization transactions. They retain minimized evidence and response hashes, enforce entity/score/source-age checks and restrict dispatch when bound/required evidence is stale or unavailable. Only the selected domain/TOE is sent during an explicit refresh, not full transaction data. Licensed live verification remains blocked. See [provider contracts](PROVIDER_CONNECTIONS.md).
 
-Next additions with clear value are trusted merchant identifiers, provider connectors, case lifecycle/incident workflows, notifications, shadow evaluation with time-split labels, and calibrated transaction models with rollback. Cross-tenant entity graphs need explicit data rights and privacy boundaries. Adding another model without representative labels would not establish better fraud detection.
+Stable operator merchant identifiers, provider adapter contracts, incident lifecycle, signed notifications and independent time-split evaluation tooling are now implemented. Acquirer proof, licensed live verification, representative calibration and any trained model with rollback remain release work requiring external evidence. Cross-tenant entity graphs need explicit data rights and privacy boundaries. Adding another model without representative labels would not establish better fraud detection.
 
 Official product references:
 

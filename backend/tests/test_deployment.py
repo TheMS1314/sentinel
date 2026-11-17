@@ -25,6 +25,10 @@ def test_manifest_separates_secrets_pins_images_and_survives_one_pod_disruption(
     assert len(deployments) == 3
     for d in deployments:
         assert d["spec"]["replicas"] == 2
+        assert d["spec"]["strategy"]["rollingUpdate"] == {
+            "maxSurge": 0,
+            "maxUnavailable": 1,
+        }
         pod = d["spec"]["template"]["spec"]
         assert pod["automountServiceAccountToken"] is False
         assert pod["affinity"]["podAntiAffinity"][
@@ -59,6 +63,7 @@ def test_production_transports_reject_unencrypted_or_unverified_dependencies():
     validate_production_transport(good, "rediss://:secret@cache:6380/0")
     for db, redis in [
         (good, "redis://cache/0"),
+        (good, "rediss://:secret@cache/0?ssl_check_hostname=false"),
         (good, "rediss://:secret@cache/0?ssl_cert_reqs=none"),
         ("postgresql://app:secret@db/sentinel", "rediss://:secret@cache/0"),
     ]:

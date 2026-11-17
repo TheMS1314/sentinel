@@ -173,3 +173,41 @@ def test_admin_issue_response_is_not_cached(db):
     assert (
         response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
     )
+
+
+def test_existing_authority_does_not_require_old_bootstrap_material(db, monkeypatch):
+    monkeypatch.delenv("SENTINEL_CREDENTIALS")
+    assert bootstrap(db) is False
+
+
+def test_reconciliation_rechecks_admin_version_after_provider_io(db):
+    from app.models.db import PaymentRecord
+    from app.core.auth import digest
+
+    p = make_policy(db)
+    req = request(p)
+    o = SentinelOrchestrator(db)
+    o.dispatch_payment = MagicMock()
+    assert o.evaluate_transaction(p, req, actor_id="shared-admin").verdict == "APPROVE"
+
+    def provider(*args, **kwargs):
+        with SessionLocal() as other:
+            credential = other.get(ServiceCredential, "shared-admin")
+            credential.key_hash = digest("replacement-key-not-disclosed")
+            credential.version += 1
+            other.commit()
+        return dict(order_id="order_contract", status="created")
+
+    from unittest.mock import patch
+
+    with patch(
+        "app.core.razorpay_gateway.RazorpayGateway.reconcile", side_effect=provider
+    ):
+        result = TestClient(app).post(
+            "/payments/" + req.request_id + "/reconcile",
+            json={"order_id": "order_contract"},
+            headers={"X-API-Key": KEY},
+        )
+    assert result.status_code == 401
+    db.expire_all()
+    assert db.get(PaymentRecord, req.request_id).state == "pending"

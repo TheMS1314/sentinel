@@ -9,7 +9,7 @@ from app.core.auth import Principal, require_api_key, assert_current_principal
 from app.core.rate_limit import enforce_rate_limit
 from app.core.schemas import StrictModel, ID
 from app.core.locking import agent_transaction
-from app.core.intelligence import GUARD_LOCK, control_event, processing_time
+from app.core.intelligence import GUARD_LOCK, control_event, processing_time, utc
 from app.core import providers
 from app.models.db import (
     get_session,
@@ -28,7 +28,7 @@ class BindingIn(StrictModel):
     merchant_id: ID
     provider: Literal["recorded_future", "riskrecon"]
     external_id: str = Field(
-        min_length=1, max_length=253, pattern=r"^[A-Za-z0-9_.:-]+$"
+        min_length=1, max_length=300, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     expected_version: int = Field(ge=0)
 
@@ -133,6 +133,23 @@ def refresh(
         merchant = db.get(MerchantIdentity, mid, populate_existing=True)
         if current.version != version or merchant.version != mv or not merchant.active:
             raise HTTPException(409, "Binding changed during refresh; discard response")
+        latest = (
+            db.query(ProviderEvidence)
+            .filter_by(binding_id=binding_id, binding_version=version)
+            .order_by(ProviderEvidence.fetched_at.desc())
+            .first()
+        )
+        if (
+            latest
+            and latest.observed_at
+            and result.get("observed_at")
+            and utc(result["observed_at"]) < utc(latest.observed_at)
+        ):
+            result.update(
+                status="error",
+                error="Source timestamp regressed",
+                expires_at=processing_time(db),
+            )
         evidence = ProviderEvidence(
             evidence_id="evidence_" + uuid.uuid4().hex,
             binding_id=binding_id,

@@ -173,3 +173,41 @@ def test_binding_refresh_version_and_dispatch_recheck(db, monkeypatch):
         == "guard_hold"
     )
     assert c.get("/providers").status_code == 401
+
+
+def test_changed_binding_during_external_io_discards_the_response(db):
+    p = make_policy(db)
+    m = identity(db, p)
+    c = TestClient(app)
+    headers = {"X-API-Key": "test-key-contracts"}
+    bid = c.post(
+        "/providers/bindings",
+        json=dict(
+            merchant_id=m.merchant_id,
+            provider="recorded_future",
+            external_id="idn:" + m.domain,
+            expected_version=0,
+        ),
+        headers=headers,
+    ).json()["binding_id"]
+
+    def remote(*args):
+        with SessionLocal() as other:
+            row = other.get(ProviderBinding, bid)
+            row.version += 1
+            other.commit()
+        now = datetime.now(timezone.utc)
+        return dict(
+            status="current",
+            score=0,
+            observed_at=now,
+            fetched_at=now,
+            expires_at=now + timedelta(hours=1),
+            response_hash="a" * 64,
+            error=None,
+        )
+
+    with patch("app.core.providers.fetch", side_effect=remote):
+        result = c.post("/providers/bindings/" + bid + "/refresh", headers=headers)
+    assert result.status_code == 409
+    assert db.query(ProviderEvidence).filter_by(binding_id=bid).count() == 0

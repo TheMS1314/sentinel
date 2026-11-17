@@ -264,7 +264,14 @@ async def lifespan(app):
             )
     from app.core.operations import endpoint
 
-    endpoint()  # Invalid configured delivery fails startup; absent delivery is explicit.
+    from app.core.providers import required_feeds
+
+    required_feeds()
+    configured_delivery = endpoint()
+    if os.environ.get("SENTINEL_ENV") == "production" and configured_delivery is None:
+        raise RuntimeError(
+            "Production requires a configured operational alert destination"
+        )
     await eval_queue.start()
     stop = asyncio.Event()
     task = asyncio.create_task(recover_outbox(stop))
@@ -1048,17 +1055,37 @@ def reconcile_payment(
     result = SentinelOrchestrator(db).gateway.reconcile(
         body.order_id, request_id, amount_paise, merchant_id=merchant_id
     )
-    payment = (
-        db.query(PaymentRecord).filter_by(request_id=request_id).with_for_update().one()
-    )
-    if payment.order_id and payment.order_id != result["order_id"]:
-        raise HTTPException(409, "Payment is already bound to another order")
-    if payment.state == "captured" and result["status"] != "captured":
-        raise HTTPException(409, "Cannot downgrade captured state")
-    payment.state, payment.order_id = result["status"], result["order_id"]
-    decision = db.query(DecisionRecord).filter_by(request_id=request_id).one()
-    decision.razorpay_status, decision.razorpay_ref = payment.state, payment.order_id
-    db.commit()
+    from app.core.intelligence import GUARD_LOCK, control_event
+
+    with agent_transaction(db, GUARD_LOCK):
+        assert_current_principal(principal, db)
+        payment = (
+            db.query(PaymentRecord)
+            .filter_by(request_id=request_id)
+            .populate_existing()
+            .with_for_update()
+            .one()
+        )
+        if payment.order_id and payment.order_id != result["order_id"]:
+            raise HTTPException(409, "Payment is already bound to another order")
+        if payment.state == "captured" and result["status"] != "captured":
+            raise HTTPException(409, "Cannot downgrade captured state")
+        before = dict(state=payment.state, order_id=payment.order_id)
+        payment.state, payment.order_id = result["status"], result["order_id"]
+        decision = db.query(DecisionRecord).filter_by(request_id=request_id).one()
+        decision.razorpay_status, decision.razorpay_ref = (
+            payment.state,
+            payment.order_id,
+        )
+        control_event(
+            db,
+            principal.subject,
+            "payment_reconciliation",
+            request_id,
+            before,
+            dict(state=payment.state, order_id=payment.order_id),
+        )
+
     return result
 
 
@@ -1155,7 +1182,10 @@ def record_provider_event(raw, signature, event_id):
             )
         ):
             raise HTTPException(401, "Invalid webhook signature")
-        event = json.loads(raw)
+        try:
+            event = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(422, "Invalid webhook JSON") from None
         if not isinstance(event, dict):
             raise HTTPException(422, "Invalid webhook event")
         event_id = event_id or hashlib.sha256(raw).hexdigest()
@@ -1237,28 +1267,9 @@ def feedback_cases(
     )
     q = scoped(q, principal, db)
     rows = q.order_by(DecisionRecord.id.desc()).limit(200).all()
-    return [
-        {
-            "case_id": "review_" + d.request_id,
-            "category": "human_feedback",
-            "policy": d.policy_snapshot,
-            "request": {
-                k: float(d.transaction.amount)
-                if k == "amount"
-                else getattr(d.transaction, k)
-                for k in TransactionRequest.__dataclass_fields__
-            },
-            "history": [],
-            "policy_overrides": {},
-            "expected_verdict": d.human_override,
-            "original_verdict": d.verdict,
-            "reviewer": d.resolved_by,
-            "notes": d.resolution_reason,
-            "is_judgment_call": True,
-            "requires_history_review": True,
-        }
-        for d in rows
-    ]
+    from app.eval.feedback_export import export_case
+
+    return [export_case(db, d) for d in rows]
 
 
 @app.get(

@@ -79,7 +79,7 @@ Vite proxies `/api` to the local backend. Never put an API key in `VITE_` variab
 
 Browser login exchanges a human credential for an eight-hour HttpOnly session. Cookie mutations require an allowlisted Origin and `X-Sentinel-CSRF: 1`. Rotating/removing the credential revokes its sessions. Service callers use `X-API-Key`.
 
-Compose uses shared database authority: the initialization job seeds the configured registry once, storing only key hashes. The Access tab supports audited create/rotate/revoke/scope operations. Restarting with old environment values never resurrects a revoked key. Production requires `SENTINEL_AUTH_BACKEND=database`. The configured-key fallback is development-only. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. TLS must be terminated by your deployment infrastructure; the included gateway is a local HTTP demo.
+Compose uses shared database authority: the initialization job seeds the configured registry once, storing only key hashes. The Access tab supports audited create/rotate/revoke/scope operations. Restarting with old environment values never resurrects a revoked key. Production requires `SENTINEL_AUTH_BACKEND=database`. The configured-key fallback is development-only. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. Production also enforces restricted DB grants, PostgreSQL/Redis TLS and an operational alert destination. [The Kubernetes renderer](docs/DEPLOYMENT.md) provides pinned images, separate migration/runtime secrets, TLS Ingress and redundant serving tiers; the base Compose gateway remains a local HTTP demo.
 
 ## API overview
 
@@ -126,13 +126,13 @@ Evaluation, fuzzing, and the pipeline benchmark run in separate processes agains
 
 Current refreshed offline reports: golden **89/89**, synthetic prevalence **500/500**, hard **14/16** with conservative mock reasoning, fuzz **187 cases / zero selected invariant violations**. The two hard-set misses are conservative holds where constructed labels expected approval. These are not real-world fraud-detection rates or live-model quality measurements.
 
-Behavioral weights and the distribution-monitor threshold remain uncalibrated heuristics. Monitor alerts never change authorization. Feedback export marks cases for history/label review; it does not automatically retrain or expand authority.
+Behavioral weights and the distribution-monitor threshold remain uncalibrated heuristics. Monitor alerts never change authorization. [Feedback curation and time-split experiments](docs/FEEDBACK_EVALUATION.md) require independent labels and recorded ledger history; they never automatically retrain or expand authority.
 
 ## Risk intelligence extension
 
 The administrator dashboard now includes **Risk intelligence**: expiring local threat indicators, owner-scoped merchant cyber-risk profiles, descriptive multi-agent merchant correlation, and a separate emergency dispatch guard with a freeze and exact rolling count/amount limits. Intelligence can restrict a decision; it cannot expand owner policy authority. Current confirmed threats are checked again before dispatch.
 
-Mastercard Decision Intelligence, Recorded Future and RiskRecon are **not connected**. Local records are labeled operator or synthetic evidence; unknown identity and absent local matches are not safe ratings. The dispatch guard runs inside Sentinel, not on a payment network. See the [design, controls, API and integration path](docs/RISK_INTELLIGENCE.md).
+Recorded Future/RiskRecon now have bounded, schema-validated read-only adapters with versioned bindings and stale-evidence dispatch checks; their **licensed live verification has not run**. Mastercard Decision Intelligence/Safety Net are not connected; Sentinel supplies its own local signals and emergency guard. Local records are labeled operator or synthetic evidence; unknown identity and absent local matches are not safe ratings. The dispatch guard runs inside Sentinel, not on a payment network. See the [design, controls, API and integration path](docs/RISK_INTELLIGENCE.md).
 
 Run migrations before using these controls on an existing database. Paused payments retain their reservations and can resume while their five-minute default approval is valid. Pending-only cancellation and expiration release undispatched reservations; unknown outcomes require reconciliation. Review pending work before unfreezing.
 
@@ -151,3 +151,8 @@ Migration preserves transaction and decision history, adds provenance/review/pay
 Production requests require an owner-scoped registered merchant ID; its name, category and domain come from the server directory and are version-bound to dispatch. These are operator-attested identities, not acquirer-verified settlement recipients. Legacy development requests may still assert merchant strings. The project does not implement real customer charging. AP2 cryptographic verification is unsupported and cannot authorize an order. Provider test credentials and live LLM keys are needed to verify those external integrations. Database administrators remain trusted; these records are not a cryptographically immutable audit system. Redis AOF `everysec` can lose recent writes on a host crash, and shared dependencies remain single points of failure in this local topology.
 
 More detail: [architecture](docs/ARCHITECTURE.md), [production engineering and operations](docs/PRODUCTION_READINESS.md), [gap-by-gap changes and verification](docs/HARDENING_REPORT.md).
+
+
+## Gap closure and release status
+
+[The remaining gap register](docs/GAP_REGISTER.md) separates implemented software from external proof. The dashboard now includes Access, Merchants, Operations and Providers, in addition to policy/review/risk controls. Use [incident operations](docs/OPERATIONS.md), [deployment configuration](docs/DEPLOYMENT.md), [commercial adapter contracts](docs/PROVIDER_CONNECTIONS.md), [opt-in integration verification](docs/INTEGRATION_VERIFICATION.md) and [independent feedback evaluation](docs/FEEDBACK_EVALUATION.md) for the current implementation. Main remains unmerged; no live-money or production launch claim is made.

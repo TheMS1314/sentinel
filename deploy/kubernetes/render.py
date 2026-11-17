@@ -188,7 +188,7 @@ http {
                     selector=dict(matchLabels=dict(app=name)),
                     strategy=dict(
                         type="RollingUpdate",
-                        rollingUpdate=dict(maxSurge=1, maxUnavailable=0),
+                        rollingUpdate=dict(maxSurge=0, maxUnavailable=1),
                     ),
                     template=dict(metadata=dict(labels=dict(app=name)), spec=spec),
                 ),

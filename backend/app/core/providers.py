@@ -39,11 +39,14 @@ def number(value, low, high):
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
-        or not math.isfinite(value)
         or not low <= value <= high
+        or not math.isfinite(value)
     ):
         raise ValueError("Invalid source score")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError:
+        raise ValueError("Source score overflows numeric bounds") from None
 
 
 def normalize(provider, external_id, payload):
@@ -154,7 +157,7 @@ def fetch(provider, external_id):
         _slots.release()
 
 
-def assessment(db, merchant):
+def required_feeds():
     required = {
         v.strip()
         for v in os.environ.get("SENTINEL_REQUIRED_FEEDS", "").split(",")
@@ -162,6 +165,11 @@ def assessment(db, merchant):
     }
     if not required.issubset(PROVIDERS):
         raise ValueError("Unsupported required feed")
+    return required
+
+
+def assessment(db, merchant):
+    required = required_feeds()
     bindings = (
         db.query(ProviderBinding).filter_by(merchant_id=merchant.merchant_id).all()
         if merchant

@@ -1,0 +1,40 @@
+name: Opt-in integration contracts
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Comma-separated targets (model,razorpay_test,recorded_future,riskrecon); creates at most one INR1 TEST order and uses bounded model tokens
+        required: true
+        default: model
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LLM_PROVIDER: ${{ vars.SENTINEL_CONTRACT_LLM_PROVIDER || 'openrouter' }}
+      LLM_MODEL: ${{ vars.SENTINEL_CONTRACT_LLM_MODEL }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_TEST_KEY_ID }}
+      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_TEST_KEY_SECRET }}
+      RECORDED_FUTURE_API_TOKEN: ${{ secrets.RECORDED_FUTURE_API_TOKEN }}
+      RISKRECON_API_TOKEN: ${{ secrets.RISKRECON_API_TOKEN }}
+      SENTINEL_PROBE_DOMAIN_ID: ${{ vars.SENTINEL_PROBE_DOMAIN_ID }}
+      SENTINEL_PROBE_RISKRECON_TOE: ${{ vars.SENTINEL_PROBE_RISKRECON_TOE }}
+      SENTINEL_ENV: integration_test
+      CONTRACT_TARGETS: ${{ inputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: PYTHONPATH=backend python -m app.ops.verify_integrations --execute --targets "$CONTRACT_TARGETS" --output artifacts/integration-contracts.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-contracts
+          path: artifacts/integration-contracts.json
+          retention-days: 7

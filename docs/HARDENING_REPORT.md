@@ -2,6 +2,12 @@
 
 This branch replaces several prototype assumptions with explicit authority, accounting and recovery boundaries. The changes are published on `codex/sentinel-hardening` in [pull request #1](https://github.com/TheMS1314/sentinel/pull/1). Main remains unmerged.
 
+## Current follow-up work
+
+[The remaining gap register](GAP_REGISTER.md) is authoritative for the current implementation. Beyond the original runtime hardening, the branch now includes shared credential lifecycle management, versioned operator merchant identities, incident workflows and signed HTTPS notifications, Recorded Future/RiskRecon adapter contracts, restricted database grants, TLS/replica deployment rendering, explicit integration probes and independently curated chronological evaluation. The final review also closes reconciliation credential rotation races and removes the need to retain old bootstrap material after initialization.
+
+[Run 44057186101](https://github.com/TheMS1314/sentinel/actions/runs/44057186101), source `027638757f9942e3ea687c7ca43e496d3427adca`, passed 235 backend tests, 15 frontend tests, container acceptance including restricted database authority and signed HTTPS sink delivery, runtime audits, and Kubernetes API-server schema validation. New contract/feedback changes are undergoing a separate final run; historical counts below describe their cited snapshots.
+
 ## Gap-by-gap outcome
 
 | Area found during review | Change |

@@ -27,19 +27,19 @@ def metadata(row):
 
 
 def bootstrap(db):
-    if (
-        not os.environ.get("SENTINEL_CREDENTIALS")
-        or os.environ["SENTINEL_CREDENTIALS"] == "[]"
-    ):
-        raise RuntimeError(
-            "Shared authority bootstrap requires explicit scoped credentials"
-        )
-    entries = credentials()
-    if not any(r["role"] == "admin" for r in entries):
-        raise RuntimeError("Bootstrap requires an administrator")
     with agent_transaction(db, AUTH_LOCK):
         if db.query(ServiceCredential).count():
             return False
+        if (
+            not os.environ.get("SENTINEL_CREDENTIALS")
+            or os.environ["SENTINEL_CREDENTIALS"] == "[]"
+        ):
+            raise RuntimeError(
+                "Shared authority bootstrap requires explicit scoped credentials"
+            )
+        entries = credentials()
+        if not any(r["role"] == "admin" for r in entries):
+            raise RuntimeError("Bootstrap requires an administrator")
         for row in entries:
             db.add(
                 ServiceCredential(

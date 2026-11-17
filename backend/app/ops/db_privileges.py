@@ -173,7 +173,19 @@ def validate(db):
         ).scalar_one()
         for table in IMMUTABLE + ("decisions", "payments", "policies")
     )
-    if elevated or writable or erasable:
+    immutable_updates = any(
+        db.execute(
+            text("SELECT has_any_column_privilege(current_user,:table,'UPDATE')"),
+            {"table": "public." + table},
+        ).scalar_one()
+        for table in IMMUTABLE
+    )
+    memberships = db.execute(
+        text(
+            "SELECT EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member WHERE r.rolname=current_user)"
+        )
+    ).scalar_one()
+    if elevated or writable or erasable or immutable_updates or memberships:
         raise RuntimeError(
             "Runtime database role has excessive privileges; use the provisioned restricted role"
         )
