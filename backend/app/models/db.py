@@ -320,3 +320,36 @@ class MerchantIdentity(Base):
     version = Column(Integer, nullable=False, default=1)
     approved_by = Column(String, nullable=False)
     updated_at = Column(DateTime, nullable=False, default=now_utc)
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+    incident_id = Column(String, primary_key=True)
+    fingerprint = Column(String, unique=True, nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    entity_id = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    state = Column(String, nullable=False, default="open")
+    condition_active = Column(Boolean, nullable=False, default=True)
+    summary = Column(Text, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    assigned_to = Column(String, nullable=True)
+    last_reason = Column(Text, nullable=True)
+    first_seen = Column(DateTime, nullable=False, default=now_utc)
+    last_seen = Column(DateTime, nullable=False, default=now_utc)
+
+
+class AlertDelivery(Base):
+    __tablename__ = "alert_deliveries"
+    __table_args__ = (Index("ix_alert_dispatch", "state", "next_attempt_at"),)
+    event_id = Column(String, primary_key=True)
+    incident_id = Column(String, ForeignKey("incidents.incident_id"), nullable=False)
+    payload = Column(JSON, nullable=False)
+    state = Column(String, nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False, default=now_utc)
+    lease_token = Column(String, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    last_error = Column(String, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=now_utc)

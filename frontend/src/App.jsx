@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Activity, ShieldCheck, BarChart3 } from "lucide-react";
 import { api } from "./api";
+import Operations from "./components/Operations";
 import MerchantDirectory from "./components/MerchantDirectory";
 import AccessControl from "./components/AccessControl";
 import RiskIntelligence from "./components/RiskIntelligence";
@@ -18,6 +19,7 @@ const DEFAULT_AGENT_ID = "agent_demo_1";
 const PAGE_SIZE = 15;
 
 const TABS = [
+  { id: "ops", label: "Operations", Icon: ShieldCheck },
   { id: "feed", label: "Live feed", Icon: Activity },
   { id: "policy", label: "Policy", Icon: ShieldCheck },
   { id: "eval", label: "Evaluation", Icon: BarChart3 },
@@ -304,7 +306,7 @@ export function Dashboard({ identity, onLogout }) {
             <button onClick={onLogout} className="text-xs text-textmuted">Sign out ({identity.subject})</button>
             <AgentSelector agents={agents} selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
             <nav className="flex gap-1 bg-surface2/60 p-1 rounded-lg border border-border">
-              {TABS.filter(t => (t.id !== "policy" || ["admin", "owner"].includes(identity.role)) && (!["risk", "access"].includes(t.id) || identity.role === "admin")).map((t) => {
+              {TABS.filter(t => (t.id !== "policy" || ["admin", "owner"].includes(identity.role)) && (!["risk", "access", "ops"].includes(t.id) || identity.role === "admin")).map((t) => {
                 const active = tab === t.id;
                 return (
                   <button
@@ -388,6 +390,7 @@ export function Dashboard({ identity, onLogout }) {
         )}
 
         {tab === "eval" && <EvalResults report={evalReport} />}
+        {tab === "ops" && identity.role === "admin" && <Operations />}
         {tab === "risk" && identity.role === "admin" && <RiskIntelligence />}
         {tab === "merchants" && ["admin","owner","reviewer"].includes(identity.role) && <MerchantDirectory identity={identity} />}
         {tab === "access" && identity.role === "admin" && <AccessControl currentSubject={identity.subject} />}

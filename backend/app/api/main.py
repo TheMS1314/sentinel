@@ -151,6 +151,41 @@ async def recover_outbox(stop):
             pass
 
 
+async def operations_loop(stop):
+    from app.core.operations import detect, deliver_one
+
+    def cycle():
+        quota_ok = True
+        if os.environ.get("RATE_LIMIT_BACKEND") == "redis":
+            try:
+                from app.core.rate_limit import shared_client
+
+                shared_client(
+                    os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+                ).ping()
+            except Exception:
+                quota_ok = False
+        with SessionLocal() as db:
+            detect(db, quota_ok)
+            for _ in range(5):
+                if not deliver_one(db):
+                    break
+
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(cycle)
+            app.state.operations_last_tick = time.monotonic()
+        except Exception as exc:
+            logger.warning("Operations monitor unavailable (%s)", type(exc).__name__)
+        try:
+            await asyncio.wait_for(
+                stop.wait(),
+                timeout=integer("SENTINEL_MONITOR_INTERVAL_SECONDS", 30, maximum=300),
+            )
+        except TimeoutError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app):
     validate_authority()  # fail closed on invalid or empty shared authority
@@ -209,23 +244,32 @@ async def lifespan(app):
             raise RuntimeError(
                 "Drain accepted legacy Redis jobs before switching to the PostgreSQL queue"
             )
+    from app.core.operations import endpoint
+
+    endpoint()  # Invalid configured delivery fails startup; absent delivery is explicit.
     await eval_queue.start()
     stop = asyncio.Event()
     task = asyncio.create_task(recover_outbox(stop))
     app.state.outbox_task = task
     app.state.outbox_last_tick = time.monotonic()
+    monitor = asyncio.create_task(operations_loop(stop))
+    app.state.operations_task = monitor
+    app.state.operations_last_tick = time.monotonic()
     try:
         yield
     finally:
         stop.set()
         try:
             await asyncio.wait_for(
-                asyncio.gather(asyncio.shield(task), eval_queue.stop()),
+                asyncio.gather(
+                    asyncio.shield(task), asyncio.shield(monitor), eval_queue.stop()
+                ),
                 timeout=integer("SENTINEL_SHUTDOWN_SECONDS", 30, maximum=60) + 2,
             )
         except TimeoutError:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            monitor.cancel()
+            await asyncio.gather(task, monitor, return_exceptions=True)
 
 
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
@@ -935,10 +979,20 @@ def health():
         and time.monotonic() - getattr(app.state, "outbox_last_tick", 0) < 120
         else "unavailable"
     )
+    monitor = getattr(app.state, "operations_task", None)
+    checks["operations"] = (
+        "ok"
+        if monitor is not None
+        and not monitor.done()
+        and time.monotonic() - getattr(app.state, "operations_last_tick", 0)
+        < integer("SENTINEL_MONITOR_INTERVAL_SECONDS", 30, maximum=300) + 120
+        else "unavailable"
+    )
     ok = (
         checks.get("database") == "ok"
         and checks.get("workers") == "ok"
         and checks["outbox"] == "ok"
+        and checks["operations"] == "ok"
         and checks.get("quota") != "unavailable"
     )
     return JSONResponse(
@@ -1141,6 +1195,9 @@ app.include_router(authority_router)
 from app.api.merchants import router as merchant_router
 
 app.include_router(merchant_router)
+from app.api.operations import router as operations_router
+
+app.include_router(operations_router)
 
 
 @app.get(

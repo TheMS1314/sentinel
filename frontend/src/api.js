@@ -56,6 +56,11 @@ function qs(params) {
 export const api = {
   listMerchants: () => request("/merchants"),
   saveMerchant: (body) => request("/merchants", {method:"POST",body:JSON.stringify(body)}),
+  opsSummary: () => request('/ops/summary'),
+  opsIncidents: () => request('/ops/incidents'),
+  opsAlerts: () => request('/ops/alerts'),
+  opsUpdate: (id, body) => request(`/ops/incidents/${id}`, {method:'POST',body:JSON.stringify(body)}),
+  opsRetry: (id, body) => request(`/ops/alerts/${id}/retry`, {method:'POST',body:JSON.stringify(body)}),
   listCredentials: () => request("/credentials"),
   changeCredential: (body) => request("/credentials", {method:"POST",body:JSON.stringify(body)}),
   login: (credential) => request("/auth/login", {method: "POST", body: JSON.stringify({credential})}),

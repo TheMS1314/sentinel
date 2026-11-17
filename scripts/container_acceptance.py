@@ -367,6 +367,34 @@ finally:
         "exec", "-T", "postgres", "dropdb", "-U", "sentinel", "sentinel_restore_test"
     )
 report["timings"]["logical_restore_seconds"] = round(time.perf_counter() - start, 3)
+# Verify actual signed HTTPS delivery across the container boundary.
+case = http(
+    "/api/ops/incidents",
+    {"request_id": req["request_id"], "summary": "CI synthetic manual review"},
+)
+check("incident_create", case[0] == 200)
+incident_id = case[1]["incident_id"]
+end = time.monotonic() + 30
+while time.monotonic() < end:
+    delivered = [
+        a
+        for a in http("/api/ops/alerts")[1]
+        if a["incident_id"] == incident_id and a["state"] == "delivered"
+    ]
+    if delivered:
+        break
+    time.sleep(1)
+check("signed_https_alert_delivered", bool(delivered))
+sink = compose(
+    "exec",
+    "-T",
+    "alerts",
+    "python",
+    "-c",
+    "import urllib.request,ssl;print(urllib.request.urlopen('https://alerts:8443/',context=ssl.create_default_context(cafile='/certs/server.crt')).read().decode())",
+)
+check("https_sink_received_unique_event", json.loads(sink)["unique_events"] > 0)
+check("protected_operational_metrics", http("/api/ops/metrics")[0] == 200)
 report["images"] = compose("images", "--format", "json").decode()
 artifacts = ROOT / "artifacts"
 artifacts.mkdir(exist_ok=True)

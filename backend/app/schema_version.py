@@ -1,1 +1,1 @@
-SCHEMA_REVISION = "0005_merchant_identity"
+SCHEMA_REVISION = "0006_operations"

@@ -1,0 +1,24 @@
+# Isolated TLS sink only; never include this file in a production deployment.
+services:
+  alerts:
+    image: python:3.12-slim
+    command: [python, /sink.py]
+    environment:
+      SINK_SECRET: ci-synthetic-alert-signing-secret-32plus
+    volumes:
+      - ./scripts/alert_test_sink.py:/sink.py:ro
+      - ./artifacts/alert-certs:/certs:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  backend1: &alerts-backend
+    environment:
+      SENTINEL_ALERT_WEBHOOK_URL: https://alerts:8443/events
+      SENTINEL_ALERT_ALLOWED_HOSTS: alerts
+      SENTINEL_ALERT_SIGNING_SECRET: ci-synthetic-alert-signing-secret-32plus
+      SENTINEL_ALERT_CA_BUNDLE: /certs/server.crt
+      SENTINEL_MONITOR_INTERVAL_SECONDS: '1'
+    volumes:
+      - ./artifacts/alert-certs/server.crt:/certs/server.crt:ro
+  backend2:
+    <<: *alerts-backend

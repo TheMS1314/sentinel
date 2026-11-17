@@ -100,8 +100,10 @@ def principal_from_row(row):
     )
 
 
-def principal_for_subject(subject):
+def principal_for_subject(subject, db=None):
     if database_authority():
+        if db is not None:
+            return principal_from_row(db.get(ServiceCredential, subject))
         with SessionLocal() as db:
             return principal_from_row(db.get(ServiceCredential, subject))
     item = next((r for r in credentials() if r["subject"] == subject), None)

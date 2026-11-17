@@ -41,7 +41,9 @@ jobs:
         if: always()
         with:
           name: backend-results
-          path: artifacts/
+          path: |
+            artifacts/
+            !artifacts/alert-certs/**
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -65,12 +67,15 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: sentinel-ci-${{ github.run_id }}-${{ github.run_attempt }}
       SENTINEL_ACCEPTANCE: '1'
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: |
+          mkdir -p artifacts/alert-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout artifacts/alert-certs/server.key -out artifacts/alert-certs/server.crt -days 1 -subj '/CN=alerts' -addext 'subjectAltName=DNS:alerts'
           python scripts/setup_dev.py
           echo 'SENTINEL_RATE_LIMIT_REQUESTS=5000' >> backend/.env
           docker compose config --quiet
@@ -86,6 +91,8 @@ jobs:
         if: always()
         with:
           name: container-acceptance
-          path: artifacts/
+          path: |
+            artifacts/
+            !artifacts/alert-certs/**
       - run: docker compose down --volumes --remove-orphans
         if: always()
