@@ -194,6 +194,17 @@ async def lifespan(app):
                 raise RuntimeError(
                     "Apply the current Alembic migration before serving traffic"
                 )
+    if (
+        os.environ.get("QUEUE_BACKEND") == "postgres"
+        and os.environ.get("RATE_LIMIT_BACKEND") == "redis"
+    ):
+        from app.core.rate_limit import shared_client
+
+        client = shared_client(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+        if await asyncio.to_thread(client.xlen, "sentinel:queue:v2"):
+            raise RuntimeError(
+                "Drain accepted legacy Redis jobs before switching to the PostgreSQL queue"
+            )
     await eval_queue.start()
     stop = asyncio.Event()
     task = asyncio.create_task(recover_outbox(stop))

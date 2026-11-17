@@ -12,7 +12,7 @@ import uuid
 from sqlalchemy import and_, or_, update
 from sqlalchemy.exc import OperationalError, TimeoutError as DBTimeout
 from app.models.db import SessionLocal, EvaluationJob, BrowserSession
-from app.core.intelligence import processing_time
+from app.core.intelligence import processing_time, utc
 from app.core.locking import agent_transaction
 from app.core.queue_errors import QueueCapacityError
 from app.core.settings import integer
@@ -175,9 +175,7 @@ class PostgresEvaluationQueue:
                 )
                 if row is None:
                     return None
-                if row.attempts == 0 and now - row.created_at.replace(
-                    tzinfo=now.tzinfo
-                ) > timedelta(
+                if row.attempts == 0 and now - utc(row.created_at) > timedelta(
                     seconds=integer(
                         "SENTINEL_JOB_MAX_AGE_SECONDS", 300, minimum=30, maximum=3600
                     )

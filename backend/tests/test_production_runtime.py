@@ -572,3 +572,12 @@ def test_untouched_expired_job_does_not_authorize_after_long_outage(db):
     db.commit()
     assert q._claim() is None
     assert q.get_job(jid)["status"] == "FAILED"
+
+
+def test_non_ascii_credential_is_rejected_without_internal_error():
+    from app.core.auth import authenticate
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as error:
+        authenticate("é" * 40)
+    assert error.value.status_code == 401

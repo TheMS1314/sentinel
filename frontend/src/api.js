@@ -77,6 +77,7 @@ export const api = {
     }),
   evalReport: () => request("/eval/report"),
   riskOverview: () => request("/risk/overview"),
+  cancelPendingPayment: ({requestId, reason}) => request(`/payments/${requestId}/cancel`, {method: "POST", body: JSON.stringify({reason})}),
   saveRiskGuard: (body) => request("/risk/guard", {method: "POST", body: JSON.stringify(body)}),
   saveMerchantRisk: (body) => request("/risk/merchants", {method: "POST", body: JSON.stringify(body)}),
   saveThreatIndicator: (body) => request("/risk/indicators", {method: "POST", body: JSON.stringify(body)}),

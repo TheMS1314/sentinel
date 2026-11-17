@@ -54,6 +54,20 @@ def overview(
         },
         "guard": guard_view(db.get(DispatchGuard, 1)),
         "pending_payments": db.query(PaymentRecord).filter_by(state="pending").count(),
+        "pending": [
+            {
+                "request_id": p.request_id,
+                "amount_paise": p.amount_paise,
+                "expires_at": utc(p.dispatch_expires_at).isoformat()
+                if p.dispatch_expires_at
+                else None,
+                "reason": p.error,
+            }
+            for p in db.query(PaymentRecord)
+            .filter_by(state="pending")
+            .order_by(PaymentRecord.updated_at)
+            .limit(20)
+        ],
         "current_indicators": db.query(ThreatIndicator)
         .filter(ThreatIndicator.active.is_(True), ThreatIndicator.expires_at > now)
         .count(),

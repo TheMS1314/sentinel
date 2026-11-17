@@ -35,8 +35,8 @@ The relation check considers at most 500 recent events, from the same owner's ag
 - A global freeze prevents new dispatch claims. It cannot recall an order claimed before the freeze committed, or cancel an already created/captured provider order.
 - Rolling count and amount limits apply across agents and owners. Amounts use integer paise.
 - Failed and unknown dispatch attempts still consume the guard's window allowance. Retrying a stable request does not create another claim.
-- A paused payment remains `pending` with `guard_hold` on its decision/provider status and a reason on its ledger record. Its approved budget remains reserved.
-- The outbox periodically retries pending rows. Changing the guard or removing a current confirmed threat can allow a previously paused payment to dispatch automatically. Operators should review pending payments before unfreezing.
+- A paused payment remains `pending` with `guard_hold` on its decision/provider status and a reason on its ledger record. It stays reserved while its approval is valid (five-minute default). Expiration or a scoped pending-only cancellation releases an undispatched reservation. Unknown effects cannot be cancelled that way.
+- The outbox periodically retries pending rows. Changing the guard or removing a current confirmed threat can allow a still-valid payment to dispatch automatically, subject to current policy and credential checks. Operators should review or cancel pending payments before unfreezing. Use the privileged DB-backed freeze command if Redis/HTTP is unavailable; see PRODUCTION_READINESS.md.
 - Recovery orders pending payments by their last attempt time; paused rows move to the back of the recovery queue so they do not permanently starve other pending work.
 - Database administrators remain trusted. Control changes record actor and before/after state in `risk_control_events`; this is an application audit trail, not immutable cryptographic storage.
 

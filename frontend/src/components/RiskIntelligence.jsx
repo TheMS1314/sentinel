@@ -18,7 +18,7 @@ function GuardForm({ guard, onSave, busy }) {
       max_amount_paise: amount === "" ? null : Math.round(Number(amount) * 100), reason});
   }}>
     <h3 className="text-text font-semibold">Emergency payment guard</h3>
-    <p className="text-sm text-textmuted">Pauses new payment dispatches. Already claimed orders may finish. Paused payments keep their budget reservation and resume through the outbox when controls allow.</p>
+    <p className="text-sm text-textmuted">Pauses new payment dispatches. Already claimed orders may finish. Paused payments keep their budget reservation and can resume through the outbox while the approval is valid. Pending approvals expire after five minutes by default; expired or cancelled reservations are released.</p>
     <label className="flex gap-2 text-text"><input type="checkbox" checked={frozen} onChange={e => setFrozen(e.target.checked)} />Freeze payment dispatch</label>
     <div className="grid sm:grid-cols-3 gap-3">
       <Field label="Rolling window (seconds)"><input className="input" type="number" min="1" max="3600" required value={windowSeconds} onChange={e => setWindow(e.target.value)} /></Field>
@@ -66,6 +66,23 @@ function EvidenceForm({ kind, onSave, busy }) {
   </form>;
 }
 
+function PendingPayments({ payments, busy, onCancel }) {
+  const [reason, setReason] = useState("");
+  return <div className="bg-surface border border-border rounded-xl p-5 flex flex-col gap-3">
+    <h3 className="font-semibold text-text">Undispatched payments</h3>
+    <p className="text-sm text-textmuted">Review these before unfreezing. Cancellation is available only before dispatch; processing and unknown outcomes require reconciliation. Showing up to 20 pending reservations.</p>
+    <Field label="Reason for cancelling a pending payment"><input className="input" value={reason} onChange={e => setReason(e.target.value)} maxLength="2000" /></Field>
+    {payments.length === 0 && <p className="text-sm text-textmuted">No pending reservations.</p>}
+    <ul className="flex flex-col gap-3">{payments.map(payment => <li key={payment.request_id} className="border border-border rounded-lg p-3 text-sm text-textmuted">
+      <p className="break-all font-mono">{payment.request_id}</p>
+      <p>₹{(payment.amount_paise / 100).toFixed(2)} · expires {payment.expires_at ? new Date(payment.expires_at).toLocaleString() : "before dispatch"}</p>
+      {payment.reason && <p>{payment.reason}</p>}
+      <button className="mt-2 rounded border border-block/40 px-3 py-1 text-block disabled:opacity-50" disabled={busy || !reason.trim()}
+        onClick={() => onCancel({requestId: payment.request_id, reason: reason.trim()})}>Cancel {payment.request_id}</button>
+    </li>)}</ul>
+  </div>;
+}
+
 export default function RiskIntelligence() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -103,6 +120,7 @@ export default function RiskIntelligence() {
         <p className="text-sm text-textmuted mb-3">{data.current_indicators} current indicators · {data.merchant_profiles} merchant profiles · {data.pending_payments} pending payments</p>
         <GuardForm key={data.guard.version} guard={data.guard} onSave={body => save(api.saveRiskGuard, body)} busy={busy} />
       </div>
+      <PendingPayments payments={data.pending || []} busy={busy} onCancel={body => save(api.cancelPendingPayment, body)} />
       <div className="grid md:grid-cols-2 gap-5">
         <div className="bg-surface border border-border rounded-xl p-5"><EvidenceForm kind="merchant" onSave={body => save(api.saveMerchantRisk, body)} busy={busy} /></div>
         <div className="bg-surface border border-border rounded-xl p-5"><EvidenceForm kind="indicator" onSave={body => save(api.saveThreatIndicator, body)} busy={busy} /></div>

@@ -35,7 +35,7 @@ Hard restrictions use deterministic comparisons. An exact normalized restatement
 - Atomic payment claims, stable request replay, and refusal to blindly retry unknown gateway outcomes.
 - Only an unresolved HOLD can be reviewed, once, with current hard-policy and allowance checks. Original verdict and reviewer event remain separate.
 - Payment reservations, created orders, mock orders, unknown outcomes, and captured payments are distinct. Created or unknown orders keep allowance reserved; order creation is not settlement.
-- Redis Streams support pending-entry recovery and lease renewal. Delivery is **at least once**, not exactly once; database idempotency and outbox claims protect side effects.
+- PostgreSQL stores accepted jobs atomically. Renewable leases fence authorization and completion; delivery is **at least once**, protected by durable request IDs and payment claims. Redis Streams remain a development compatibility option.
 - Distributed quotas use Redis server time and an atomic sliding-window script. Redis mode never silently falls back to a private process queue.
 - AP2-shaped unsigned JSON cannot authorize payments: the HTTP adapter returns 501 until authenticated protocol support is implemented.
 - Live Razorpay keys are rejected. Only `rzp_test_` keys or explicit local mocks are supported.
@@ -54,7 +54,7 @@ Open **http://localhost:8000**. Sign in using the generated local-admin credenti
 
 The seed resets demo data and produces 18 transactions: 6 APPROVE, 2 HOLD, and 10 BLOCK. Reset is disabled in the production profile. Never run it against valuable data.
 
-Compose runs PostgreSQL, persistent Redis with AOF, migrations, two non-root backend replicas, the built frontend, and a loopback-bound nginx gateway. Database and Redis ports are not published. Backend containers have no development reload or source bind mount.
+Compose runs PostgreSQL (including the authoritative job queue), Redis quotas, migrations, two non-root backend replicas, the built frontend, and a loopback-bound nginx gateway with dynamic upstream DNS. Database and Redis ports are not published. Backend containers have no development reload or source bind mount.
 
 For frontend development:
 
@@ -79,7 +79,7 @@ Vite proxies `/api` to the local backend. Never put an API key in `VITE_` variab
 
 Browser login exchanges a human credential for an eight-hour HttpOnly session. Cookie mutations require an allowlisted Origin and `X-Sentinel-CSRF: 1`. Rotating/removing the credential revokes its sessions. Service callers use `X-API-Key`.
 
-The development fallback key is allowed only without scoped credentials and outside the production profile. The production profile requires PostgreSQL, Redis queue/quota backends, scoped credentials, explicit HTTPS origins, a configured live reasoning provider, and Razorpay **test** credentials. TLS must be terminated by your deployment infrastructure; the included gateway is a local HTTP demo.
+The development fallback key is allowed only without scoped credentials and outside the production profile. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. TLS must be terminated by your deployment infrastructure; the included gateway is a local HTTP demo.
 
 ## API overview
 
@@ -91,7 +91,7 @@ The development fallback key is allowed only without scoped credentials and outs
 | Background work | `GET /jobs`, `GET /jobs/{job_id}`, `GET /jobs/batch/{batch_id}` |
 | Simulations | `POST /simulate`, `POST /simulate-async` (disabled in production profile) |
 | Review | `POST /holds/{request_id}/resolve` |
-| Provider | Signed `POST /payments/webhook`; admin reconciliation endpoints |
+| Provider | Signed `POST /payments/webhook`; admin reconciliation endpoints; scoped pending-only `POST /payments/{request_id}/cancel` |
 | Evidence | `GET /eval/report`, scoped `GET /feedback/cases`, admin `GET /metrics` |
 | Health | `GET /health` |
 
@@ -134,7 +134,7 @@ The administrator dashboard now includes **Risk intelligence**: expiring local t
 
 Mastercard Decision Intelligence, Recorded Future and RiskRecon are **not connected**. Local records are labeled operator or synthetic evidence; unknown identity and absent local matches are not safe ratings. The dispatch guard runs inside Sentinel, not on a payment network. See the [design, controls, API and integration path](docs/RISK_INTELLIGENCE.md).
 
-Run migrations before using these controls on an existing database. Paused payments retain their reservations and can resume automatically after controls allow dispatch; review pending work before unfreezing.
+Run migrations before using these controls on an existing database. Paused payments retain their reservations and can resume while their five-minute default approval is valid. Pending-only cancellation and expiration release undispatched reservations; unknown outcomes require reconciliation. Review pending work before unfreezing.
 
 ## Existing installations
 
@@ -150,4 +150,4 @@ Migration preserves transaction and decision history, adds provenance/review/pay
 
 Merchant names/categories remain caller assertions; this project does not establish verified merchant identity or implement real customer charging. AP2 cryptographic verification is unsupported and cannot authorize an order. Provider test credentials and live LLM keys are needed to verify those external integrations. Database administrators remain trusted; these records are not a cryptographically immutable audit system. Redis AOF `everysec` can lose recent writes on a host crash, and shared dependencies remain single points of failure in this local topology.
 
-More detail: [architecture](docs/ARCHITECTURE.md), [gap-by-gap changes and verification](docs/HARDENING_REPORT.md).
+More detail: [architecture](docs/ARCHITECTURE.md), [production engineering and operations](docs/PRODUCTION_READINESS.md), [gap-by-gap changes and verification](docs/HARDENING_REPORT.md).

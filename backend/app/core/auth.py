@@ -52,7 +52,9 @@ def credentials():
         for row in configured:
             if (
                 not row.get("subject")
+                or not isinstance(row.get("key"), str)
                 or len(row.get("key", "")) < 32
+                or not row["key"].isascii()
                 or row.get("role") not in ("admin", "owner", "reviewer", "agent")
             ):
                 raise RuntimeError("Invalid SENTINEL_CREDENTIALS configuration")
@@ -73,6 +75,8 @@ def credentials():
 
 
 def authenticate(key):
+    if not isinstance(key, str) or not key.isascii() or not 1 <= len(key) <= 512:
+        raise HTTPException(401, "Missing or invalid credential")
     for item in credentials():
         if hmac.compare_digest(key, item["key"]):
             return Principal(

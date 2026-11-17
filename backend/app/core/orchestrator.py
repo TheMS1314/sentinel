@@ -168,6 +168,7 @@ class SentinelOrchestrator:
                     job is None
                     or job.status != "PROCESSING"
                     or job.lease_token != work_lease["token"]
+                    or job.lease_expires_at is None
                     or utc(job.lease_expires_at) <= processing_time(self.db)
                 ):
                     raise ConflictError(

@@ -204,6 +204,23 @@ check(
     status == 200 and batch["by_status"].get("DONE") == 12,
 )
 
+# Database interruption must fail closed while liveness remains available.
+compose("stop", "postgres")
+try:
+    check(
+        "database_outage_fails_closed",
+        http("/api/transactions/evaluate", purchase())[0] == 503,
+    )
+    check("liveness_survives_database_outage", http("/api/health/live")[0] == 200)
+    check("readiness_reports_database_outage", http("/health")[0] == 503)
+finally:
+    compose("start", "postgres")
+wait_ready()
+check(
+    "database_restart_recovery",
+    http("/api/transactions/evaluate", purchase())[0] == 200,
+)
+
 # Recreate one backend to change its container IP. Resolver must refresh and the
 # surviving backend must continue serving requests without a gateway restart.
 compose("stop", "backend1")
@@ -286,4 +303,5 @@ artifacts.mkdir(exist_ok=True)
 (artifacts / "container-acceptance.json").write_text(
     json.dumps(report, indent=2) + "\n"
 )
+print("ACCEPTANCE_TIMINGS " + json.dumps(report["timings"], sort_keys=True), flush=True)
 print("COMPOSE_ACCEPTANCE_PASS", flush=True)

@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import RiskIntelligence from '../components/RiskIntelligence';
 import { api } from '../api';
-vi.mock('../api', () => ({api: {riskOverview: vi.fn(), saveRiskGuard: vi.fn(), saveMerchantRisk: vi.fn(), saveThreatIndicator: vi.fn()}}));
+vi.mock('../api', () => ({api: {riskOverview: vi.fn(), saveRiskGuard: vi.fn(), saveMerchantRisk: vi.fn(), saveThreatIndicator: vi.fn(), cancelPendingPayment: vi.fn()}}));
 const overview = (version = 0) => ({guard:{version,frozen:false,window_seconds:60,max_dispatches:null,max_amount_paise:null},
   current_indicators:0,merchant_profiles:0,pending_payments:2,events:[]});
 afterEach(() => {cleanup();vi.resetAllMocks();});
@@ -51,4 +51,16 @@ it('submits expiring synthetic merchant evidence without a claimed provider conn
   fireEvent.click(screen.getByRole('button', {name:'Save merchant profile'}));
   await waitFor(() => expect(api.saveMerchantRisk).toHaveBeenCalledWith(expect.objectContaining({owner_id:'owner_demo',
     merchant_name:'FreshMart',domain:'shop.example',source:'synthetic',evidence:'Demo profile',cyber_risk_score:0})));
+});
+
+
+it('requires a cancellation reason and submits only the selected pending payment', async () => {
+  api.riskOverview.mockResolvedValue({...overview(), pending:[{request_id:'req_waiting', amount_paise:2929, reason:'Dispatch frozen'}]});
+  api.cancelPendingPayment.mockResolvedValue({status:'cancelled'});
+  render(<RiskIntelligence/>);
+  const button=await screen.findByRole('button',{name:'Cancel req_waiting'});
+  expect(button.disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Reason for cancelling a pending payment'),{target:{value:'Owner cancelled the purchase'}});
+  fireEvent.click(button);
+  await waitFor(()=>expect(api.cancelPendingPayment).toHaveBeenCalledWith({requestId:'req_waiting',reason:'Owner cancelled the purchase'}));
 });
