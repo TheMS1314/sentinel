@@ -77,7 +77,7 @@ Example guard body (₹1,000 aggregate attempted dispatches per minute):
 
 ## Executed verification
 
-Latest [run 44091900923](https://github.com/TheMS1314/sentinel/actions/runs/44091900923) passed **269 backend tests, 19 frontend tests and 39 container checks**, runtime audits, Kubernetes schema dry run and nginx config validation. Checks include stable merchant IDs, shared revocation, signed alerts, restricted DB grants and opt-in enrichment scheduling with explicit missing-credential HOLD. [Current evidence](verification/provider-refresh-ci.json) separates these checks from licensed/live integration proof, which remains unavailable.
+Latest [run 44100786661](https://github.com/TheMS1314/sentinel/actions/runs/44100786661) passed **282 backend tests, 19 frontend tests, 39 application-container checks and 11 Gateway API/TLS routing checks**, runtime audits and nginx config validation. [Current evidence](verification/gateway-ci.json) keeps routing fixtures separate from live commercial/model/payment verification. The latter remains a release gate.
 
 ## Commercial integration path
 

@@ -59,3 +59,5 @@ Primary references:
 - https://gateway.envoyproxy.io/news/releases/matrix/
 
 The nginx application/fixture image references use the current upstream nginx/nginx-unprivileged Docker Hub namespace. The project documents nginxinc as the legacy namespace for older releases: https://github.com/nginx/docker-nginx-unprivileged/blob/main/README.md . The CI fixture records its resolved image digest. Test certificates include explicit CA/server constraints and key identifiers and pass strict OpenSSL verification before installation; certificate verification is never disabled to make the routing test pass.
+
+Executed routing evidence: [run 44100786661](https://github.com/TheMS1314/sentinel/actions/runs/44100786661), source 8d0820175a5ce81a3fa2783a8c17132fd6bdd677, passed all 11 real-controller Gateway API/TLS checks. [Machine-readable evidence](verification/gateway-ci.json) records the distinct fixture scope and remaining deployment gates.
