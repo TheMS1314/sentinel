@@ -45,7 +45,7 @@ Administrator evidence/guard updates share the dispatch lock and record actor pl
 
 ## Queue, quotas and failure recovery
 
-PostgreSQL atomically admits bounded batches and stores jobs, payloads, subjects, status and results. Workers claim independent rows with SKIP LOCKED and renewable opaque leases. The current token is checked under a job row lock before financial authorization and when completing work. Dependency failures reuse the stable request ID; exhausted retries become visible failed jobs. Never-started work expires after five minutes by default. Retention preserves incomplete batches and does not delete the financial ledger.
+PostgreSQL atomically admits bounded batches and stores jobs, payloads, subjects, status and results. Workers claim independent rows with SKIP LOCKED and renewable opaque leases. The current token is checked under a job row lock before financial authorization and when completing work. Dependency failures reuse the stable request ID; exhausted retries become visible failed jobs. Commands expire after five minutes by default, including retried work. Retention preserves incomplete batches and does not delete the financial ledger.
 
 The production profile rejects in-memory and legacy Redis queues. Startup refuses undrained hardened-v2 Redis work rather than silently switching authority. Development compatibility queues retain their documented limits. Accepted SQL work survives loss of Redis; new HTTP admission fails closed if its quota service is unavailable.
 
