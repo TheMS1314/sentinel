@@ -33,10 +33,7 @@ class CredentialChange(StrictModel):
                 raise ValueError("Owner scope required")
             if self.role == "agent" and not self.agent_ids:
                 raise ValueError("Agent scope required")
-        if self.expires_at and (
-            self.expires_at.tzinfo is None
-            or self.expires_at <= datetime.now(timezone.utc)
-        ):
+        if self.expires_at and self.expires_at.tzinfo is None:
             raise ValueError("Use a future timezone-aware expiry")
         if self.expires_at:
             self.expires_at = self.expires_at.astimezone(timezone.utc)

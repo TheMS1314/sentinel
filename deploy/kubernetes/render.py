@@ -1,6 +1,7 @@
 """Render a secret-free TLS/replica deployment; applying it is a separate operator step."""
 
 import argparse
+from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -129,14 +130,20 @@ http {
         volumes = [dict(name="tmp", emptyDir=dict(sizeLimit="128Mi"))]
         if api:
             c["envFrom"] = [
-                dict(configMapRef=dict(name="sentinel-config")),
                 dict(secretRef=dict(name="sentinel-runtime")),
+                dict(configMapRef=dict(name="sentinel-config")),
             ]
             c["env"] = [
                 dict(
+                    name="SENTINEL_ENV",
+                    valueFrom=dict(
+                        configMapKeyRef=dict(name="sentinel-config", key="SENTINEL_ENV")
+                    ),
+                ),
+                dict(
                     name="SENTINEL_INSTANCE_ID",
                     valueFrom=dict(fieldRef=dict(fieldPath="metadata.name")),
-                )
+                ),
             ]
             c["volumeMounts"].append(
                 dict(name="db-ca", mountPath="/run/sentinel-ca", readOnly=True)
@@ -202,6 +209,17 @@ http {
         ("sentinel-gateway", "gateway", False),
     ]:
         spec, _ = pod(name, images[key], is_api)
+        metadata = dict(labels=dict(app=name))
+        if is_api:
+            data = json.dumps(config, sort_keys=True)
+        elif name == "sentinel-gateway":
+            data = nginx
+        else:
+            data = None
+        if data is not None:
+            metadata["annotations"] = {
+                "sentinel/config-sha256": sha256(data.encode()).hexdigest()
+            }
         items.append(
             resource(
                 "Deployment",
@@ -215,7 +233,7 @@ http {
                         type="RollingUpdate",
                         rollingUpdate=dict(maxSurge=0, maxUnavailable=1),
                     ),
-                    template=dict(metadata=dict(labels=dict(app=name)), spec=spec),
+                    template=dict(metadata=metadata, spec=spec),
                 ),
             )
         )
@@ -247,8 +265,8 @@ http {
         c.pop(key)
     c["command"] = ["python", "-m", "app.ops.initialize"]
     c["envFrom"] = [
-        dict(configMapRef=dict(name="sentinel-config")),
         dict(secretRef=dict(name="sentinel-migration")),
+        dict(configMapRef=dict(name="sentinel-config")),
     ]
     migration.pop("affinity")
     migration["restartPolicy"] = "Never"

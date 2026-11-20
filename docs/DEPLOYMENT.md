@@ -18,7 +18,7 @@ Build/publish the two project images, choose a pinned nginx-unprivileged image f
 python deploy/kubernetes/render.py --host YOUR_DOMAIN --backend-image YOUR_BACKEND_IMAGE_AT_DIGEST --frontend-image YOUR_FRONTEND_IMAGE_AT_DIGEST --gateway-image YOUR_GATEWAY_IMAGE_AT_DIGEST --gateway-class sentinel --output deployment.yaml
 ```
 
-Each image argument must have the form `registry/path@sha256:<64 lowercase hex digits>`. Configure the model explicitly in the generated ConfigMap if using another supported model/provider. Runtime image pinning does not by itself prove reproducible builds or a verified supply chain.
+Each image argument must have the form `registry/path@sha256:<64 lowercase hex digits>`. Keep runtime settings such as the model and production profile in the generated ConfigMap. Its values take precedence over duplicate keys in the Secret. The renderer includes config checksums in the API and gateway pod templates so changes to rendered settings trigger a rollout. After editing a ConfigMap directly or rotating environment-based secrets, restart the affected deployments and wait for readiness. Runtime image pinning does not by itself prove reproducible builds or a verified supply chain.
 
 Create these secrets through the deployment secret manager before rollout; no real values belong in Git:
 

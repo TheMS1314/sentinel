@@ -5,7 +5,7 @@ import os
 import secrets
 from fastapi import HTTPException
 from app.core.auth import credentials, digest, assert_current_principal
-from app.core.intelligence import control_event, processing_time
+from app.core.intelligence import control_event, processing_time, utc
 from app.core.locking import agent_transaction
 from app.models.db import ServiceCredential
 
@@ -68,6 +68,9 @@ def change(db, actor, body):
     key = None
     with agent_transaction(db, AUTH_LOCK):
         assert_current_principal(actor, db)
+        now = processing_time(db)
+        if body.expires_at is not None and utc(body.expires_at) <= now:
+            raise HTTPException(422, "Use a future timezone-aware expiry")
         row = (
             db.query(ServiceCredential)
             .filter_by(subject=body.subject)
@@ -108,23 +111,19 @@ def change(db, actor, body):
             or (body.action == "rotate" and body.expires_at is not None)
         ):
             if row.active and row.role == "admin":
-                now = processing_time(db)
-                others = (
+                backup = (
                     db.query(ServiceCredential)
                     .filter(
                         ServiceCredential.subject != row.subject,
                         ServiceCredential.role == "admin",
                         ServiceCredential.active.is_(True),
+                        ServiceCredential.expires_at.is_(None),
                     )
-                    .all()
+                    .first()
                 )
-                if not any(
-                    r.expires_at is None
-                    or r.expires_at.replace(tzinfo=timezone.utc) > now
-                    for r in others
-                ):
+                if backup is None:
                     raise HTTPException(
-                        409, "Cannot remove the last active administrator"
+                        409, "Keep at least one active administrator without an expiry"
                     )
         if body.action in ("create", "rotate"):
             key = secrets.token_urlsafe(32)

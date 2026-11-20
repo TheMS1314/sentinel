@@ -53,6 +53,7 @@ def test_unusable_create_response_stays_unknown_and_never_retries(payload):
         12.34, "request", dict(sentinel_merchant_id="merchant")
     )
     assert response["status"] == "unknown"
+    assert response["order_id"] is None
     assert client.client.order.create.call_count == 1
     client.client.session.close.assert_called_once()
 

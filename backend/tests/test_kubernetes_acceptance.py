@@ -69,7 +69,10 @@ def test_application_overrides_preserve_replica_security_and_runtime_separation(
             assert c["securityContext"]["capabilities"]["drop"] == ["ALL"]
             assert c["readinessProbe"] and c["livenessProbe"]
             if row["metadata"]["name"] == "sentinel-api":
-                assert c["envFrom"][-1] == dict(secretRef=dict(name="sentinel-runtime"))
+                assert c["envFrom"] == [
+                    dict(secretRef=dict(name="sentinel-runtime")),
+                    dict(configMapRef=dict(name="sentinel-config")),
+                ]
                 assert c["imagePullPolicy"] == "Never"
         if row["kind"] == "ConfigMap" and row["metadata"]["name"] == "sentinel-config":
             assert row["data"]["SENTINEL_ENV"] == "development"

@@ -15,13 +15,9 @@ This pass reviews authority, retries, financial state, dependency boundaries and
 
 The database clock itself must be maintained correctly by the production platform. These changes remove independent replica-clock authority; they do not prove clock synchronization across a real database failover.
 
-## Open upstream development dependency advisory
+## Frontend dependency audit
 
-GHSA-fc5q-39xc-vjpf (CVE-2026-112366) affects picomatch through 4.0.7. The upstream advisory and registry listed no patched release when reviewed on 2026-11-17. This is **not fixed** by this branch.
-
-The affected packages are development/build/test tooling in the lockfile. The deployed frontend image contains nginx and compiled assets, with no Node development server. Vite development/preview servers are explicitly loopback-only, and project glob patterns come from repository configuration. CI jobs have bounded runtimes and read-only repository permissions. Do not expose build/dev tools to untrusted glob inputs or run unreviewed code with deployment credentials.
-
-`scripts/check_frontend_audit.py` checks both full and production-only npm audit reports. It permits this one exact advisory only when every affected lockfile node is development-only and the production report has zero findings. It emits a visible warning and saves the full reports; it never reports a clean development audit. Unknown findings, broken audit reports, a new upstream picomatch release or the **2026-12-01 UTC** expiry block CI. npm may suggest incompatible parent-tool downgrades through `audit fix --force`; those are not treated as upstream picomatch patches and are not applied automatically. The exception can be removed after supported dependency updates and verification.
+GitHub withdrew GHSA-fc5q-39xc-vjpf on November 18, 2026. The temporary build-only exception has been removed. CI runs npm audit across the full dependency tree and saves the report as an artifact.
 
 References:
 

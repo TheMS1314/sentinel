@@ -40,6 +40,7 @@ def test_manifest_separates_secrets_pins_images_and_survives_one_pod_disruption(
         assert "livenessProbe" in c and "readinessProbe" in c
     api = next(d for d in deployments if d["metadata"]["name"] == "sentinel-api")
     refs = api["spec"]["template"]["spec"]["containers"][0]["envFrom"]
+    assert refs[-1] == {"configMapRef": {"name": "sentinel-config"}}
     assert {"secretRef": {"name": "sentinel-runtime"}} in refs
     assert all(r.get("secretRef", {}).get("name") != "sentinel-migration" for r in refs)
     gateway = next(
@@ -65,6 +66,14 @@ def test_manifest_separates_secrets_pins_images_and_survives_one_pod_disruption(
         and d["metadata"]["name"] == "sentinel-gateway-config"
     )["data"]["nginx.conf"]
     assert "location ^~ /api/health { return 404; }" in nginx
+    assert (
+        len(
+            gateway["spec"]["template"]["metadata"]["annotations"][
+                "sentinel/config-sha256"
+            ]
+        )
+        == 64
+    )
     job = next(d for d in items if d["kind"] == "Job")
     assert {"secretRef": {"name": "sentinel-migration"}} in job["spec"]["template"][
         "spec"

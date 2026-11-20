@@ -65,7 +65,10 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: python ../scripts/check_frontend_audit.py
+      - name: Audit all frontend dependencies
+        run: |
+          mkdir -p ../artifacts
+          npm audit --audit-level=low --json > ../artifacts/frontend-audit.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:

@@ -346,6 +346,7 @@ def main():
             provider_keys,
             SENTINEL_DATABASE_URL=runtime_url,
             REDIS_URL=redis_url,
+            SENTINEL_ENV="invalid-secret-profile",
         ),
     )
     put_secret(

@@ -155,6 +155,21 @@ def test_last_administrator_cannot_be_revoked_or_demoted(db):
         assert error.value.status_code == 409
 
 
+def test_temporary_admin_cannot_replace_the_only_permanent_admin(db):
+    expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    action(db, "temporary", "create", 0, role="admin", expires_at=expiry)
+    for kind, fields in (
+        ("revoke", {}),
+        ("scope", {"role": "owner", "owner_id": "o"}),
+        ("rotate", {"expires_at": expiry}),
+    ):
+        with pytest.raises(HTTPException) as error:
+            action(db, "shared-admin", kind, 1, **fields)
+        assert error.value.status_code == 409
+    action(db, "temporary", "rotate", 1)
+    assert action(db, "shared-admin", "revoke", 1)["principal"]["active"] is False
+
+
 def test_rotation_fences_old_queued_commands_and_pending_dispatch(db):
     p = make_policy(db)
     robot = action(db, "robot", "create", 0, role="agent", agent_ids=[p.agent_id])

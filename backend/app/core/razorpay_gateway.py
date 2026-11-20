@@ -86,9 +86,7 @@ class RazorpayGateway:
             except ValueError:
                 return {
                     "status": "unknown",
-                    "order_id": order.get("id")
-                    if isinstance(order, dict) and valid_reference(order.get("id"))
-                    else None,
+                    "order_id": None,
                     "error": "Provider order response mismatch; reconciliation required",
                 }
             return {"status": "created", "order_id": order["id"], "amount_paise": cents}
