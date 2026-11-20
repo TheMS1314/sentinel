@@ -16,6 +16,13 @@ it('labels commercial providers as disconnected and local evidence as uncertain'
   expect(screen.getByLabelText('Profile source').value).toBe('synthetic');
 });
 
+it('shows the deployment pause when the editable database guard is open', async () => {
+  api.riskOverview.mockResolvedValue({...overview(), deployment_dispatch_paused:true});
+  render(<RiskIntelligence/>);
+  expect((await screen.findByRole('status')).textContent).toContain('Deployment settings pause payment dispatch');
+  expect(screen.getByLabelText('Freeze payment dispatch').checked).toBe(false);
+});
+
 it('submits a versioned freeze and converts rupees to exact integer paise', async () => {
   api.riskOverview.mockResolvedValueOnce(overview()).mockResolvedValue(overview(1));
   api.saveRiskGuard.mockResolvedValue({});

@@ -66,6 +66,7 @@ def render(host, images, namespace="sentinel", gateway_class="sentinel"):
         "SENTINEL_ALLOWED_ORIGINS": "https://" + host,
         "SENTINEL_REQUIRE_RESTRICTED_DB": "1",
         "SENTINEL_REQUIRE_MIGRATIONS": "1",
+        "SENTINEL_DISPATCH_PAUSED": "0",
         "SENTINEL_TRUSTED_PROXY_IPS": "",
         "LLM_PROVIDER": "openrouter",
         "LLM_MODEL": "anthropic/claude-sonnet-4.5",

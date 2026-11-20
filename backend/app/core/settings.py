@@ -44,6 +44,11 @@ def database_options(url):
     }
 
 
+def deployment_dispatch_paused():
+    """Keep the restore fence outside the database being recovered."""
+    return bool(integer("SENTINEL_DISPATCH_PAUSED", 0, minimum=0, maximum=1))
+
+
 def dispatch_deadline():
     return datetime.now(timezone.utc) + timedelta(
         seconds=integer("SENTINEL_APPROVAL_TTL_SECONDS", 300, minimum=30, maximum=3600)

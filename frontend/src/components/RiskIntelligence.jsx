@@ -118,6 +118,7 @@ export default function RiskIntelligence() {
     {data && <>
       <div className="bg-surface border border-border rounded-xl p-5">
         <p className="text-sm text-textmuted mb-3">{data.current_indicators} current indicators · {data.merchant_profiles} merchant profiles · {data.pending_payments} pending payments</p>
+        {data.deployment_dispatch_paused && <p role="status" className="text-sm text-hold">Deployment settings pause payment dispatch. Changing the emergency guard cannot resume it.</p>}
         <GuardForm key={data.guard.version} guard={data.guard} onSave={body => save(api.saveRiskGuard, body)} busy={busy} />
       </div>
       <PendingPayments payments={data.pending || []} busy={busy} onCancel={body => save(api.cancelPendingPayment, body)} />

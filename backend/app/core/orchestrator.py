@@ -24,7 +24,7 @@ from app.core.risk_score import RiskScorer
 from app.core.validation import validate_request, validate_policy, paise, utc_timestamp
 from app.core.locking import agent_transaction
 from app.core.intelligence import utc
-from app.core.settings import integer
+from app.core.settings import deployment_dispatch_paused, integer
 from app.core.merchant_identity import resolve as resolve_merchant, dispatch_binding
 from app.core.auth import (
     database_authority,
@@ -400,7 +400,12 @@ class SentinelOrchestrator:
                 self.audit.update_razorpay_status(request_id, "expired", None)
                 return {"status": "expired"}
             blocked = (
-                dispatch_authority(self.db, request_id)
+                (
+                    "Payment dispatch is paused by this deployment"
+                    if deployment_dispatch_paused()
+                    else None
+                )
+                or dispatch_authority(self.db, request_id)
                 or dispatch_binding(self.db, request_id)
                 or dispatch_permission(self.db, payment)
                 or confirmed_dispatch_threat(self.db, request_id)

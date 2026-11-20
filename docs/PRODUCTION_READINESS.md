@@ -121,7 +121,11 @@ docker compose exec backend1 python -m app.ops.freeze --reason "Incident investi
 
 This command requires privileged deployment-shell/database access and records an operator audit event. It can only freeze. Review pending payments in the administrator dashboard; cancel undesired undispatched reservations with a reason. Resume using the versioned guard only after resolving the incident. Unknown/processing effects require provider reconciliation, not cancellation.
 
-Backups must include policies, jobs, ledger/decision records, dispatch claims and audit events as a consistent database snapshot. Encrypt them, protect access separately, and verify restoration into an isolated database regularly. After disaster recovery, keep dispatch frozen until restored history is reconciled with provider effects. A database restore cannot roll back an external payment, and an asynchronous failover can lose acknowledged history unless the infrastructure contract prevents it. The CI restore exercise proves the local logical-backup path, not a production RPO/RTO or provider recovery plan.
+Backups must include policies, jobs, ledger/decision records, dispatch claims and audit events as a consistent database snapshot. Encrypt them, protect access separately, and verify restoration into an isolated database regularly.
+
+Before connecting any application replica or worker to restored data, stop the old instances and set `SENTINEL_DISPATCH_PAUSED=1` in the replacement deployment. Set it in the Kubernetes `sentinel-config` ConfigMap or in `backend/.env` for Compose. Recreate the affected pods or containers so every instance reads the setting. This setting applies to synchronous requests and outbox retries. Pending approvals remain reserved and still expire normally. The administrator risk overview reports the pause for the instance that serves the request.
+
+Keep external traffic closed during the restore. Review provider effects and reconcile affected records before resuming, including effects that may be absent from the restored ledger. Preserve or cancel pending reservations as part of that review. Resume by restoring `SENTINEL_DISPATCH_PAUSED=0` and recreating instances after the review. The database guard and other authorization checks still apply. A database restore cannot reverse an external payment. Production recovery time, recovery point, and provider reconciliation require a drill on the target infrastructure.
 
 ## Evidence and release gates
 

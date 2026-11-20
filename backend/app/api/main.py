@@ -59,7 +59,7 @@ from app.core.schemas import (
     ReconcileIn,
 )
 from app.core.redis_queue import make_queue
-from app.core.settings import integer
+from app.core.settings import deployment_dispatch_paused, integer
 from app.schema_version import SCHEMA_REVISION
 from app.core.queue_errors import QueueCapacityError
 from app.agents.purchasing_agent import PurchasingAgent
@@ -232,6 +232,7 @@ async def lifespan(app):
     from app.core.env import validate_environment
 
     validate_environment(serving=True)
+    deployment_dispatch_paused()  # Reject invalid restore controls before workers start.
     validate_authority()  # fail closed on invalid or empty shared authority
     from app.core.llm_client import LLMClient
     from app.core.razorpay_gateway import RazorpayGateway

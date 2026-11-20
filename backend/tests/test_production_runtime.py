@@ -26,6 +26,7 @@ from app.models.db import (
     DecisionRecord,
     PolicyRecord,
     DispatchGuard,
+    DispatchClaim,
     EvaluationJob,
 )
 from app.models.policy import Decision
@@ -150,6 +151,20 @@ def test_expired_pending_approval_cannot_dispatch(db):
     )
     o.gateway.create_order.assert_not_called()
     assert db.get(PaymentRecord, req.request_id).state == "expired"
+
+
+def test_deployment_pause_holds_payment_even_with_open_database_guard(db, monkeypatch):
+    p = make_policy(db)
+    req, o = pending(db, p)
+    monkeypatch.setenv("SENTINEL_DISPATCH_PAUSED", "1")
+
+    result = SentinelOrchestrator.dispatch_payment(o, req.request_id)
+
+    assert result["status"] == "guard_hold"
+    assert "deployment" in result["reason"]
+    assert db.get(PaymentRecord, req.request_id).state == "pending"
+    assert db.get(DispatchClaim, req.request_id) is None
+    o.gateway.create_order.assert_not_called()
 
 
 def test_crashed_dispatch_stays_reserved_as_unknown(db):

@@ -20,6 +20,7 @@ from app.core.intelligence import (
 )
 from app.core.locking import agent_transaction
 from app.core.orchestrator import ConflictError
+from app.core.settings import deployment_dispatch_paused
 from app.models.db import (
     get_session,
     MerchantRiskProfile,
@@ -59,6 +60,7 @@ def overview(
             **configuration(),
         },
         "guard": guard_view(db.get(DispatchGuard, 1)),
+        "deployment_dispatch_paused": deployment_dispatch_paused(),
         "pending_payments": db.query(PaymentRecord).filter_by(state="pending").count(),
         "pending": [
             {

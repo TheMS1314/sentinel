@@ -307,11 +307,25 @@ for _ in range(40):
     time.sleep(0.5)
 check("backend_recreation_dns", seen == {"backend1", "backend2"})
 
-# Restore a logical backup into a new throwaway database, never over the source.
+# Capture a pending approval whose dispatch state could otherwise be rolled back.
+guard = http("/api/risk/overview")[1]["guard"]
+body.update(expected_version=guard["version"], frozen=True, reason="CI backup fixture")
+assert http("/api/risk/guard", body)[0] == 200
+restore_request = purchase()
+assert http("/api/transactions/evaluate", restore_request)[1]["verdict"] == "APPROVE"
+rid = restore_request["request_id"]
 start = time.perf_counter()
 dump = compose(
     "exec", "-T", "postgres", "pg_dump", "-U", "sentinel", "-d", "sentinel", "-Fc"
 )
+# Release the source reservation before reopening the normal CI stack.
+assert (
+    http("/api/payments/" + rid + "/cancel", {"reason": "CI backup created"})[0] == 200
+)
+body.update(expected_version=guard["version"] + 1, frozen=False, reason="CI resume")
+assert http("/api/risk/guard", body)[0] == 200
+
+# Restore into a new throwaway database, never over the source.
 compose("exec", "-T", "postgres", "createdb", "-U", "sentinel", "sentinel_restore_test")
 try:
     compose(
@@ -361,6 +375,49 @@ try:
     check(
         "backup_restore_records_and_schema",
         int(restored) > 20 and revision == SCHEMA_REVISION,
+    )
+    # Exercise the real runtime role against the restored snapshot. An open
+    # database guard models a backup that predates an incident freeze.
+    output = compose(
+        "exec",
+        "-T",
+        "-e",
+        "SENTINEL_DISPATCH_PAUSED=1",
+        "backend1",
+        "python",
+        "-",
+        rid,
+        input=b"""import os
+import sys
+from sqlalchemy.engine import make_url
+
+url = make_url(os.environ["SENTINEL_DATABASE_URL"])
+os.environ["SENTINEL_DATABASE_URL"] = url.set(database="sentinel_restore_test").render_as_string(hide_password=False)
+
+from app.core.orchestrator import SentinelOrchestrator
+from app.models.db import DispatchClaim, DispatchGuard, PaymentRecord, SessionLocal
+
+rid = sys.argv[1]
+with SessionLocal() as db:
+    guard = db.get(DispatchGuard, 1)
+    guard.frozen = False
+    db.commit()
+    assert db.get(PaymentRecord, rid).state == "pending"
+    assert db.get(DispatchClaim, rid) is None
+    executor = SentinelOrchestrator(db)
+    assert executor.gateway.mock_mode
+    result = executor.dispatch_payment(rid)
+    assert result["status"] == "guard_hold" and "deployment" in result["reason"]
+with SessionLocal() as db:
+    payment = db.get(PaymentRecord, rid)
+    assert payment.state == "pending" and payment.order_id is None
+    assert db.get(DispatchClaim, rid) is None
+print("restored_dispatch_paused")
+""",
+    )
+    check(
+        "restored_pending_approval_cannot_dispatch_while_paused",
+        output.strip() == b"restored_dispatch_paused",
     )
 finally:
     compose(
