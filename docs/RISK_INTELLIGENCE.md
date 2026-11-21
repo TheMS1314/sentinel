@@ -1,6 +1,6 @@
 # Sentinel risk intelligence: first implementation
 
-Sentinel now has four complementary layers inspired by payment-risk systems. These are Sentinel implementations, not Mastercard products or connected commercial services.
+Sentinel implements its own transaction-risk scoring, threat and exposure checks, and emergency dispatch guard. The table describes those local controls. The [commercial integration section](#commercial-integration-path) covers the separate Recorded Future and RiskRecon adapters and the status of the Mastercard services.
 
 | Inspiration | Implemented in Sentinel | Boundary |
 |---|---|---|
@@ -81,7 +81,9 @@ The [November 17 implementation run](https://github.com/TheMS1314/sentinel/actio
 
 ## Commercial integration path
 
-Recorded Future documents API token authentication with data/endpoint entitlements determined by licensed modules. RiskRecon documents separately subscribed API access. Mastercard Decision Intelligence and Safety Net require their respective product onboarding and an appropriate payment-system role; this project does not possess a Mastercard network vantage point.
+Recorded Future documents API token authentication with data and endpoint entitlements determined by licensed modules. RiskRecon documents separately subscribed API access.
+
+Mastercard Decision Intelligence and Safety Net are unconnected. Their commercial onboarding applies only if a deployment chooses to use those services. Sentinel's local scoring and dispatch guard run without them.
 
 Read-only Recorded Future/RiskRecon adapters, administrator bindings and refresh controls now implement this path outside authorization transactions. They retain minimized evidence and response hashes, enforce entity/score/source-age checks and restrict dispatch when bound/required evidence is stale or unavailable. Only the selected domain/TOE is sent during an explicit refresh, not full transaction data. Licensed live verification remains blocked. See [provider contracts](PROVIDER_CONNECTIONS.md).
 
