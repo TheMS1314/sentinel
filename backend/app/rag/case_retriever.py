@@ -32,7 +32,7 @@ import numpy as np
 @dataclass
 class PastCase:
     request_id: str
-    text: str              # the searchable text representation of the case
+    text: str  # the searchable text representation of the case
     verdict: str
     reasons: list[str]
     merchant_category: str
@@ -54,7 +54,9 @@ class CaseRetriever:
         self._matrix = None
 
     @staticmethod
-    def _case_text(merchant_category: str, merchant_name: str, stated_intent: str, amount: float) -> str:
+    def _case_text(
+        merchant_category: str, merchant_name: str, stated_intent: str, amount: float
+    ) -> str:
         # Deliberately include category + intent as the dominant signal --
         # amount is bucketed coarsely so retrieval matches on "kind of spend"
         # rather than exact figures, which would fragment the corpus.
@@ -85,7 +87,9 @@ class CaseRetriever:
         if not self._cases or self._vectorizer is None:
             return []
 
-        query_text = self._case_text(merchant_category, merchant_name, stated_intent, amount)
+        query_text = self._case_text(
+            merchant_category, merchant_name, stated_intent, amount
+        )
         query_vec = self._vectorizer.transform([query_text])
         sims = cosine_similarity(query_vec, self._matrix)[0]
 

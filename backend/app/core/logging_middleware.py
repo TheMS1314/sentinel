@@ -23,6 +23,7 @@ import uuid
 import json
 import logging
 import os
+import re
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -36,7 +37,13 @@ logger.propagate = False
 
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID", f"req_{uuid.uuid4().hex[:12]}")
+        supplied = request.headers.get("X-Request-ID", "")
+        request_id = (
+            supplied
+            if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", supplied)
+            else f"req_{uuid.uuid4().hex}"
+        )
+        request.state.request_id = request_id
         start = time.perf_counter()
 
         response = await call_next(request)
@@ -47,7 +54,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
         log_entry = {
             "request_id": request_id,
             "method": request.method,
-            "path": request.url.path,
+            "path": request.url.path[:256],
             "status_code": response.status_code,
             "duration_ms": duration_ms,
             "instance_id": os.environ.get("SENTINEL_INSTANCE_ID", "unknown"),

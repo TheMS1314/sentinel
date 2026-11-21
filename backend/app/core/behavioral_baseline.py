@@ -37,9 +37,34 @@ from dataclasses import dataclass
 from statistics import mean, stdev
 from typing import Optional
 
-MIN_HISTORY_FOR_BASELINE = 5  # below this, there's not enough signal to baseline meaningfully
+
+def hour_distance(a, b):
+    return min(abs(a - b), 24 - abs(a - b))
+
+
+def circular_hour_distance(hours, hour):
+    # Smallest circular arc containing the observations, found by removing
+    # the largest gap. This treats 23:00 and 01:00 as neighbors.
+    values = sorted(set(hours))
+    if len(values) == 1:
+        return hour_distance(hour, values[0])
+    gaps = [
+        (values[(i + 1) % len(values)] - values[i]) % 24 for i in range(len(values))
+    ]
+    i = max(range(len(gaps)), key=gaps.__getitem__)
+    start, length = values[(i + 1) % len(values)], 24 - gaps[i]
+    if (hour - start) % 24 <= length:
+        return 0
+    return min(hour_distance(hour, start), hour_distance(hour, (start + length) % 24))
+
+
+MIN_HISTORY_FOR_BASELINE = (
+    5  # below this, there's not enough signal to baseline meaningfully
+)
 AMOUNT_ZSCORE_THRESHOLD = 2.0  # ~95th percentile under a normal approximation
-HOUR_OUTLIER_MARGIN = 3  # hours outside the agent's observed [min-margin, max+margin] range
+HOUR_OUTLIER_MARGIN = (
+    3  # hours outside the agent's observed [min-margin, max+margin] range
+)
 
 
 @dataclass
@@ -60,17 +85,22 @@ class BehavioralBaseline:
 
     def evaluate(self, history_items: list, request) -> BehavioralFlag:
         approved_amounts = [
-            item.request.amount for item in history_items if item.counts_as_spent
+            item.request.amount for item in history_items if item.is_approved_behavior
         ]
         approved_hours = [
-            item.request.requested_at_hour for item in history_items if item.counts_as_spent
+            item.request.requested_at_hour
+            for item in history_items
+            if item.is_approved_behavior
         ]
 
         if len(approved_amounts) < MIN_HISTORY_FOR_BASELINE:
             # Not enough history to baseline meaningfully yet -- a young
             # agent's first few transactions can't be judged as "typical"
             # or "atypical" against a pattern that doesn't exist yet.
-            return BehavioralFlag(is_anomaly=False, reason="Insufficient history for a behavioral baseline.")
+            return BehavioralFlag(
+                is_anomaly=False,
+                reason="Insufficient history for a behavioral baseline.",
+            )
 
         baseline_mean = mean(approved_amounts)
         # stdev needs 2+ points and can be 0 if every past amount was
@@ -85,8 +115,8 @@ class BehavioralBaseline:
 
         typical_hour_range = (min(approved_hours), max(approved_hours))
         hour_is_outlier = (
-            request.requested_at_hour < typical_hour_range[0] - HOUR_OUTLIER_MARGIN
-            or request.requested_at_hour > typical_hour_range[1] + HOUR_OUTLIER_MARGIN
+            circular_hour_distance(approved_hours, request.requested_at_hour)
+            > HOUR_OUTLIER_MARGIN
         )
 
         amount_is_outlier = abs(zscore) > AMOUNT_ZSCORE_THRESHOLD

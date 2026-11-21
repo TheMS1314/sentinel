@@ -37,3 +37,6 @@
 # Temporary files
 *.tmp
 *.temp
+.test-pg/
+artifacts/
+.venv*/

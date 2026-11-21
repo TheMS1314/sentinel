@@ -1,0 +1,136 @@
+# Production engineering and release boundaries
+
+Sentinel is a modular agent-payment control service. Its money connector still accepts only Razorpay test keys. This document describes the implemented runtime, its measured checks, and deployment work that must be verified before a production launch. Passing a test suite does not validate a financial provider contract, merchant identity, or disaster recovery across a real provider.
+
+## Runtime design
+
+PostgreSQL is the source of truth for accepted jobs, policies, decisions, reservations, dispatch claims, sessions and audit events. Redis is a shared quota dependency, not a second authority for accepted work. Two stateless application replicas can serve the same database. Each replica currently contains bounded evaluation and recovery workers; the architecture intentionally keeps one application deployment unit until profiling justifies separating workers.
+
+```mermaid
+flowchart TD
+    C[Scoped clients] --> I[TLS ingress]
+    I --> A[Application replicas]
+    A --> D[(PostgreSQL)]
+    A --> R[(Redis quotas)]
+    D --> W[Leased job workers]
+    W --> D
+    W --> L[Bounded intent provider]
+    D --> O[Payment outbox and guard]
+    O --> P[Test payment provider]
+    P --> H[Signed capture and reconciliation]
+    H --> D
+```
+
+The included Compose stack has a single host, gateway, PostgreSQL node and Redis node. It is a reproducible acceptance topology, not a multi-zone HA deployment. A production deployment needs a redundant TLS ingress and a managed/failover-capable PostgreSQL service with tested backups and an agreed RPO/RTO. Redis failure deliberately stops new API work through the quota check; it does not erase already accepted jobs.
+
+## Resolved runtime blockers
+
+| Finding | Implemented boundary |
+|---|---|
+| Model IO held an agent lock and connection | Prepare under a short transaction, call outside it, then reacquire and recheck current policy, clock and allowance; discard stale policy reasoning |
+| Redis acceptance could outlive its persistence | Atomically accept complete batches in PostgreSQL, with a shared capacity bound and no fallback |
+| Worker lease could expire while work continued | Unique lease tokens fence both final authorization and job completion; PostgreSQL row locks prevent takeover during a commit |
+| Long outages could execute stale commands | Commands expire after five minutes by default, including retries; exhausted recovery attempts become visible terminal failures |
+| Crashed provider calls stayed processing | Stale processing becomes unknown and remains reserved for reconciliation, never an automatic second order |
+| Late gateway response could undo capture | Finalization reloads under row lock and preserves captured/already reconciled outcomes |
+| Old pending approvals could resume indefinitely | Five-minute default dispatch deadline, explicit pending-only cancellation, policy/credential recheck and current threat checks |
+| Infrastructure outage could block emergency freeze | Privileged DB-backed freeze command independent of Redis and HTTP ingress |
+| Pool/lock waits could consume all capacity | Bounded connection pool, acquisition/connection/statement/lock/idle transaction timeouts and retryable 503 responses |
+| Synchronous dependencies blocked the HTTP loop | DB authentication runs in sync dependencies; batch preparation and webhook persistence run in worker threads |
+| Model and gateway transports accumulated resources | Lazy bounded model clients, explicit timeout/retry budgets and transport close; no gateway order retries after uncertainty |
+| Large/slow bodies and overload were unbounded | Streaming-aware body limit, total body-read deadline, per-process admission and server connection limits |
+| Job ownership could change after submission | Recheck current agent scope when reading jobs; recheck submitting subject before processing |
+| Replica recreation could leave stale gateway DNS | Docker resolver with shared upstream zones and bounded failover; accepted requests carry stable IDs |
+| Historical migrations depended on future ORM schema | Frozen revision-specific schema snapshots; explicit later migration owns new runtime fields/tables |
+
+## Money and command lifetimes
+
+An HTTP 200 approval is a recorded authorization decision, not proof of capture. A submitted service request must carry a stable `request_id` in the production profile. Retrying that ID with identical facts returns its durable decision; changing its facts conflicts.
+
+Production requests also require an owner-scoped merchant ID. The directory supplies canonical name/category/domain; agents cannot label a registered casino as groceries. Directory changes invalidate pending version bindings. This closes caller-assertion bypasses, not the external acquirer/settlement verification contract.
+
+An approval reserves allowance and commits a pending payment intent. Dispatch checks its deadline, current policy identity, current authorizing credential scope, emergency limits and confirmed threats before atomically claiming it. Human review binds its new authorization to the policy used at review. A policy change or revoked actor can pause a previously approved intent.
+
+Pending reservations can expire or be cancelled because no provider claim has been made. Processing, created and unknown outcomes cannot be released by that cancellation endpoint. Only verified capture counts as completed spending. A process can crash immediately before or after external IO; the database cannot prove which happened. Unknown states require provider reconciliation. Stable receipt correlation is not a substitute for a contractual provider idempotency guarantee.
+
+The outbox checks up to eight pending rows per cycle, with at most four parallel provider calls and separate sessions. Paused attempts move to the back of recovery order. Freeze prevents new claims; a previously claimed external call can still finish. Expiry uses the authorization deadline rather than the last recovery timestamp.
+
+## Queue contract
+
+Production requires `QUEUE_BACKEND=postgres`. Admission serializes only its short capacity check and insert transaction. Capacity is 500 outstanding jobs by default in the queue constructor. A batch is accepted in full or rejected with 503/Retry-After; partial admission is not a success.
+
+Workers use `FOR UPDATE SKIP LOCKED` so they can claim different rows. A claim has a 60-second renewable lease and an opaque token. Old tokens cannot authorize or overwrite a winner's result. Dependency errors retry the same durable request, with a five-attempt processing budget. Other failures are visible FAILED results. Failed jobs are not evidence that no payment effect exists: inspect the original request/ledger before choosing a new ID.
+
+Queue claims and financial authorization both check the original command age against `SENTINEL_JOB_MAX_AGE_SECONDS`. A worker needs a live lease to renew or finish a job. Completed jobs remain for 24 hours by default. Cleanup keeps incomplete batches intact, removes eligible complete batches as a whole, and preserves ledger history. Delivery is at least once.
+
+Memory and Redis Stream queues remain compatibility/development implementations. They are rejected by the production profile. Before upgrading an existing Redis installation, stop new submissions, drain old workers, inspect unresolved payment effects, verify the old stream is empty, and then switch. New startup refuses an outstanding hardened-v2 Redis stream rather than silently abandoning it. Do not deploy two different queue backends against an active workload.
+
+## Capacity and overload
+
+Defaults are deployment inputs, not a universal sizing claim:
+
+| Limit | Default |
+|---|---:|
+| PostgreSQL connections per replica | 10, no overflow |
+| Pool acquisition / connection timeout | 3s / 3s |
+| SQL statement / lock / idle transaction timeout | 10s / 2s / 15s |
+| Application HTTP admission / server concurrency | 32 / 64 per replica |
+| Request body / total body-read time | 512 KiB / 10s |
+| Signed webhook body | 64 KiB |
+| Live model concurrency | 4 per replica |
+| Model timeout / attempts | 10s per SDK operation / 2 attempts |
+| Gateway connect / read timeout | 3.05s / 10s, no automatic order retry |
+| Evaluation workers | 4 per replica |
+| New job / pending approval lifetime | 300s / 300s |
+| Stale dispatch detection | 120s |
+| Background shutdown drain / container grace | 30s / 45s |
+
+SDK read timeouts are transport-operation limits, not a proof of a strict wall-clock provider deadline. If an in-flight thread cannot be interrupted, lease fencing and durable request IDs protect effects. Redis client pools are reused and bounded. Numeric-library CPU threading is limited inside the backend image.
+
+Two default replicas budget 20 PostgreSQL application connections, plus migrations/operations and any other clients. Raise concurrency only after measuring database wait, model latency, queue age, gateway latency and memory. The global dispatch guard deliberately serializes a small database-only claim section; it never holds that lock across provider IO. Sharding away that lock would change aggregate-limit semantics and requires an explicit design.
+
+## Deployment configuration
+
+Use the checked-in `.env.example` as a reference; generate development secrets with `scripts/setup_dev.py`. Inject actual deployment secrets through the platform's secret manager. Neither example files nor container logs should contain real credentials.
+
+The production profile additionally requires scoped credentials, explicit HTTPS allowed origins, explicit allowed hosts, a chosen live model/provider, a 32+ character webhook secret, Razorpay test credentials, the SQL queue, Redis quotas and current schema revision. It disables simulations and development shared-key fallback. Configure proxy trust to actual ingress addresses/CIDRs; wildcard trust is disabled by the server launcher. The Compose subnet can be changed with `SENTINEL_SUBNET` if it overlaps an existing network.
+
+Use private, authenticated, encrypted database/cache endpoints appropriate to the deployment. The included local PostgreSQL/Redis services do not provision that infrastructure. Use separate environments and separate quota/database namespaces/endpoints for staging and production. Compose now provisions a restricted runtime role separate from initialization/backup authority. Production startup rejects excessive grants and requires verified PostgreSQL/Redis TLS. See [deployment implementation](DEPLOYMENT.md).
+
+Production credentials now use shared PostgreSQL authority. The initialization job seeds the initial registry once and stores key hashes. Administrator create/rotate/revoke/scope changes are versioned and audited; old keys, sessions, queued commands and pending authority are invalidated across replicas. Configured credentials remain a development-only option. Customer SSO/MFA is a separate optional identity integration; the implemented production authentication contract is scoped service credentials. Privileged recovery can create a replacement administrator key in a new 0600 file using `python -m app.ops.recover_admin --subject recovery-admin --reason "Incident recovery" --output /tmp/new-admin-key`; it never prints the credential.
+
+## Upgrade and rollback
+
+1. Enter a maintenance window or prevent new submissions. Drain legacy queue work before changing backends. Capture a verified database backup.
+2. Run the one-shot migration job before starting new application replicas: `docker compose run --rm db-init`.
+3. Revision `0003_runtime_safety` adds durable jobs, submitting actor and dispatch validity/binding fields plus operational indexes. Old pending intents without a validity contract expire rather than receiving new authority. Existing created/unknown/captured records remain for reconciliation.
+4. Start the new replicas, check readiness through ingress, verify policy/owner scopes and replay behavior, then admit traffic gradually.
+5. Roll back application code only with a reviewed compatibility plan. Destructive database downgrades are disabled. Never replace the financial ledger with an older backup while allowing payment dispatch.
+
+## Incident operations
+
+`GET /health/live` is a cheap process check. `GET /health/ready` and `/health` check database/queue, worker tasks, Redis quota access, outbox progress and monitor progress. Readiness failure removes traffic; liveness should not cause a restart loop just because PostgreSQL or Redis is unavailable. Compose exposes API probes under `/api`, and ingress `/health` forwards to readiness.
+
+`GET /metrics` is administrator-only and reports ledger states, queue backlog and review backlog. Durable incident handling, signed retryable HTTPS alert delivery and protected Prometheus text metrics are implemented; an actual recipient still needs configuration and verification. See [operations](OPERATIONS.md). Connect monitoring to readiness, sustained 503/429 rates, oldest queued/processing age, failed jobs, unknown payment count, repeated outbox errors, database connection waits, disk/WAL growth and quota memory saturation. Access logs have bounded request IDs, status and duration and omit bodies/credentials; database statement parameters are hidden.
+
+For an emergency freeze when HTTP or Redis is unavailable:
+
+```bash
+docker compose exec backend1 python -m app.ops.freeze --reason "Incident investigation"
+```
+
+This command requires privileged deployment-shell/database access and records an operator audit event. It can only freeze. Review pending payments in the administrator dashboard; cancel undesired undispatched reservations with a reason. Resume using the versioned guard only after resolving the incident. Unknown/processing effects require provider reconciliation, not cancellation.
+
+Backups must include policies, jobs, ledger/decision records, dispatch claims and audit events as a consistent database snapshot. Encrypt them, protect access separately, and verify restoration into an isolated database regularly.
+
+Before connecting any application replica or worker to restored data, stop the old instances and set `SENTINEL_DISPATCH_PAUSED=1` in the replacement deployment. Set it in the Kubernetes `sentinel-config` ConfigMap or in `backend/.env` for Compose. Recreate the affected pods or containers so every instance reads the setting. This setting applies to synchronous requests and outbox retries. Pending approvals remain reserved and still expire normally. The administrator risk overview reports the pause for the instance that serves the request.
+
+Keep external traffic closed during the restore. Review provider effects and reconcile affected records before resuming, including effects that may be absent from the restored ledger. Preserve or cancel pending reservations as part of that review. Resume by restoring `SENTINEL_DISPATCH_PAUSED=0` and recreating instances after the review. The database guard and other authorization checks still apply. A database restore cannot reverse an external payment. Production recovery time, recovery point, and provider reconciliation require a drill on the target infrastructure.
+
+## Evidence and release gates
+
+The GitHub `containers` job builds the real images and runs `scripts/container_acceptance.py` only against a fresh `sentinel-ci-*` project. It checks HTTP replay/hard caps/concurrency, freeze/cancel, accepted job survival through Redis interruption, fail-closed quotas/readiness, a stopped/recreated backend, dynamic DNS and logical backup restoration. It writes timings, success/failure counts and image identifiers to its artifact. These are mock-provider smoke measurements, not production capacity or fraud-quality claims.
+
+The [November 17 implementation run](https://github.com/TheMS1314/sentinel/actions/runs/44141841334) passed 320 backend tests, 19 frontend tests, 39 Compose checks, 11 Gateway API/TLS checks and 22 application checks in Kubernetes. The application checks cover verified PostgreSQL and Redis TLS, rejection of plaintext and untrusted certificates, and ledger persistence after replacing the PostgreSQL pod on the same volume. Kind uses mock model and payment providers. See the [implementation audit](IMPLEMENTATION_AUDIT.md) and [branch CI](https://github.com/TheMS1314/sentinel/actions?query=branch%3Acodex%2Fsentinel-hardening) for current results.
+
+The concrete remaining register is [GAP_REGISTER.md](GAP_REGISTER.md). Software now includes shared credential authority, operator merchant IDs, licensed-feed adapter contracts, incident/alert operations, restricted DB grants, TLS/replica deployment rendering, opt-in integration checks and independent feedback evaluation. Release still requires licensed/model/test-provider verification, acquirer/settlement identity proof, representative labels, real environment secret operations, multi-zone failover, external TLS/alert verification and a measured recovery/reconciliation drill. Real-money support remains deliberately disabled until those contracts are established.

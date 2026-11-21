@@ -1,41 +1,61 @@
-"""
-Sentinel Orchestrator
-======================
-The single entry point that ties everything together:
+"""Transactional authorization, durable payment intent and guarded human review."""
 
-    TransactionRequest
-        -> log to audit trail
-        -> RuleEngine (deterministic, primary)
-            -> APPROVE / BLOCK / HOLD  -> final, done
-            -> ESCALATE                -> LLMReasoner (secondary)
-                -> APPROVE / BLOCK / HOLD -> final
-        -> log Decision to audit trail
-        -> if APPROVE: attempt via RazorpayGateway
-        -> if HOLD: surfaced to a human for confirmation (HITL) --
-           nothing happens until resolve_hold() is called
-        -> if BLOCK: nothing happens, ever, for this request
-
-This is the module the API layer and the dashboard both call into --
-neither of them should talk to the rule engine, reasoner, or gateway
-directly.
-"""
-
-from __future__ import annotations
-import logging
-from sqlalchemy.orm import Session
-
-from app.models.policy import AgentPolicy, TransactionRequest, Decision, VERDICT_APPROVE, VERDICT_HOLD, VERDICT_BLOCK
+from dataclasses import asdict, fields, dataclass
+from datetime import datetime, timezone, timedelta
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import update, text
+from app.models.policy import AgentPolicy, TransactionRequest, Decision
+from app.models.db import (
+    DecisionRecord,
+    TransactionRecord,
+    PolicyRecord,
+    PaymentRecord,
+    ReviewEvent,
+    IntelligenceAssessment,
+    DispatchClaim,
+    EvaluationJob,
+)
 from app.core.rule_engine import RuleEngine, ESCALATE, result_to_decision
 from app.core.llm_reasoner import LLMReasoner
 from app.core.audit_logger import AuditLogger
 from app.core.razorpay_gateway import RazorpayGateway
-from app.rag.case_retriever import CaseRetriever, PastCase
-from app.models.db import DecisionRecord
-from app.core.cache import case_index_cache
 from app.core.behavioral_baseline import BehavioralBaseline
 from app.core.risk_score import RiskScorer
+from app.core.validation import validate_request, validate_policy, paise, utc_timestamp
+from app.core.locking import agent_transaction
+from app.core.intelligence import utc
+from app.core.settings import deployment_dispatch_paused, integer
+from app.core.merchant_identity import resolve as resolve_merchant, dispatch_binding
+from app.core.auth import (
+    database_authority,
+    principal_from_row,
+    assert_current_principal,
+)
+from app.models.db import ServiceCredential
+from app.core.intelligence import (
+    assess,
+    dispatch_permission,
+    GUARD_LOCK,
+    processing_time,
+    confirmed_dispatch_threat,
+    dispatch_authority,
+)
+from app.rag.case_retriever import CaseRetriever, PastCase
 
-logger = logging.getLogger("sentinel.orchestrator")
+
+class ConflictError(ValueError):
+    pass
+
+
+def decision_from_record(record):
+    keys = {f.name for f in fields(Decision)}
+    return Decision(**{key: getattr(record, key) for key in keys})
+
+
+@dataclass
+class SemanticPreparation:
+    policy: AgentPolicy
+    request: TransactionRequest
 
 
 class SentinelOrchestrator:
@@ -47,149 +67,536 @@ class SentinelOrchestrator:
         self.reasoner = LLMReasoner(case_retriever=self.retriever)
         self.gateway = RazorpayGateway()
         self.behavioral_baseline = BehavioralBaseline()
-        self.risk_scorer = RiskScorer(behavioral_baseline=self.behavioral_baseline)
+        self.risk_scorer = RiskScorer(self.behavioral_baseline)
 
-    def _refresh_case_index(self, agent_id: str):
-        """Rebuild the RAG index from this agent's audit history before
-        reasoning on an escalated case. Cached briefly (see cache.py) --
-        escalations for the same agent often cluster in time (a burst of
-        ambiguous requests from one adversarial run, for example), so
-        refitting TF-IDF from scratch on every single one is wasted work.
-        The cache is invalidated the moment a new decision is logged for
-        this agent, so it never serves stale precedent."""
-        cache_key = f"case_index:{agent_id}"
-        cached = case_index_cache.get(cache_key)
-        if cached is not None:
-            self.retriever._cases = cached["cases"]
-            self.retriever._vectorizer = cached["vectorizer"]
-            self.retriever._matrix = cached["matrix"]
+    def _refresh_case_index(self, agent_id, policy, request):
+        # Rebuild a bounded index with durable policy/goal scoping. No cross-replica
+        # invalidation race. Human corrections replace the original precedent.
+        import os
+
+        if os.environ.get("SENTINEL_DISABLE_RETRIEVAL") == "1":
+            self.retriever.refresh([])
             return
-
         rows = (
             self.db.query(DecisionRecord)
             .join(DecisionRecord.transaction)
-            .filter(DecisionRecord.transaction.has(agent_id=agent_id))
+            .options(joinedload(DecisionRecord.transaction))
+            .filter(
+                TransactionRecord.agent_id == agent_id,
+                TransactionRecord.raw_agent_goal == request.raw_agent_goal,
+                DecisionRecord.policy_id == policy.policy_id,
+                TransactionRecord.requested_at_iso <= request.requested_at_iso,
+            )
+            .order_by(DecisionRecord.id.desc())
+            .limit(500)
             .all()
         )
-        cases = []
-        for d in rows:
-            tx = d.transaction
-            if tx is None:
-                continue
-            cases.append(
+        self.retriever.refresh(
+            [
                 PastCase(
-                    request_id=d.request_id,
-                    text=CaseRetriever._case_text(tx.merchant_category, tx.merchant_name, tx.stated_intent, tx.amount),
-                    verdict=d.verdict,
-                    reasons=d.reasons or [],
-                    merchant_category=tx.merchant_category,
-                    merchant_name=tx.merchant_name,
-                    amount=tx.amount,
+                    d.request_id,
+                    CaseRetriever._case_text(
+                        d.transaction.merchant_category,
+                        d.transaction.merchant_name,
+                        d.transaction.stated_intent,
+                        float(d.transaction.amount),
+                    ),
+                    d.human_override or d.verdict,
+                    [d.resolution_reason]
+                    if d.human_override and d.resolution_reason
+                    else d.reasons,
+                    d.transaction.merchant_category,
+                    d.transaction.merchant_name,
+                    float(d.transaction.amount),
                 )
-            )
-        self.retriever.refresh(cases)
-        case_index_cache.set(cache_key, {
-            "cases": self.retriever._cases,
-            "vectorizer": self.retriever._vectorizer,
-            "matrix": self.retriever._matrix,
-        })
+                for d in rows
+            ]
+        )
 
     def evaluate_transaction(
         self,
         policy: AgentPolicy,
         request: TransactionRequest,
-        scenario_tag: str = "",
+        scenario_tag="",
+        *,
+        actor_id="internal",
+        execute_payment=True,
+        work_lease=None,
+        actor_version=1,
     ) -> Decision:
-        # 1. Fetch history BEFORE logging this request -- a transaction must
-        #    only ever be evaluated against what genuinely happened before
-        #    it. Logging first and then querying "recent transactions" would
-        #    incorrectly include this very request in its own history,
-        #    double-counting it in the velocity check (found via a live
-        #    burst-load test: a 3-transaction limit was tripping after only
-        #    2 real prior transactions because each request was seeing
-        #    itself in the count).
-        history = self.audit.get_recent_transactions_for_agent(request.agent_id)
-
-        # 2. Now log the request itself -- always, regardless of what happens next.
-        self.audit.log_transaction(request, scenario_tag=scenario_tag)
-
-        # 3. Deterministic rule engine, primary decision layer.
-        rule_result = self.rule_engine.evaluate(policy, request, history)
-
-        if rule_result.outcome != ESCALATE:
-            decision = result_to_decision(request, rule_result)
-        else:
-            # 3. Only ambiguous cases reach the LLM reasoner, grounded by
-            #    retrieval over this agent's own past decisions.
-            self._refresh_case_index(request.agent_id)
-            decision = self.reasoner.evaluate(policy, request)
-
-        # 3b. Composite risk scoring -- a secondary check, independent of
-        #     the static rules above. Only runs on requests about to be
-        #     approved: a transaction that already failed a hard rule or
-        #     is already held doesn't need a second reason to not proceed.
-        #     This can downgrade APPROVE -> HOLD (never upgrade to BLOCK --
-        #     a risk score is a "let a human look at this" signal, not
-        #     proof of a violation).
-        #
-        #     Combines four weak signals (amount deviation, timing
-        #     deviation, merchant familiarity, category familiarity) into
-        #     one weighted score -- see risk_score.py. This is a strict
-        #     upgrade over a single binary anomaly flag: it can catch a
-        #     request where no ONE signal alone is unusual enough to flag,
-        #     but several mild signals together are, which is closer to
-        #     how production fraud-scoring engines actually work.
-        if decision.verdict == VERDICT_APPROVE:
-            score = self.risk_scorer.evaluate(history, request)
-            if score.is_high_risk:
-                decision = Decision(
-                    request_id=decision.request_id,
-                    verdict=VERDICT_HOLD,
-                    reasons=decision.reasons + [RiskScorer.format_reason(score)],
-                    checked_rules=decision.checked_rules + ["behavioral_baseline"],
-                    decided_by="behavioral_baseline",
-                    similar_past_cases=decision.similar_past_cases,
-                    confidence=score.total / score.max_total,
-                )
-
-        # 4. Log the decision -- the audit trail is complete regardless of verdict.
-        self.audit.log_decision(decision)
-        case_index_cache.invalidate_prefix(f"case_index:{request.agent_id}")
-
-        # 5. Only APPROVE ever reaches Razorpay. HOLD waits for a human.
-        #    BLOCK never proceeds, full stop.
-        if decision.verdict == VERDICT_APPROVE:
-            result = self.gateway.create_order(
-                amount_inr=request.amount,
-                request_id=request.request_id,
-                notes={"agent_id": request.agent_id, "merchant": request.merchant_name},
+        validate_request(request)
+        if request.agent_id != policy.agent_id:
+            raise ValueError("request and policy agent must match")
+        validate_policy(policy)
+        outcome = self._evaluate_locked(
+            policy,
+            request,
+            scenario_tag,
+            actor_id,
+            execute_payment,
+            work_lease=work_lease,
+            actor_version=actor_version,
+        )
+        if isinstance(outcome, SemanticPreparation):
+            # No advisory lock, open transaction or checked-out DB connection while
+            # the provider runs. The second phase rechecks policy/budget/clock.
+            semantic = self.reasoner.evaluate(outcome.policy, outcome.request)
+            outcome = self._evaluate_locked(
+                policy,
+                request,
+                scenario_tag,
+                actor_id,
+                execute_payment,
+                semantic=(
+                    outcome.policy.to_dict(),
+                    semantic,
+                    outcome.request.merchant_version,
+                ),
+                work_lease=work_lease,
+                actor_version=actor_version,
             )
-            self.audit.update_razorpay_status(request.request_id, result["status"], result.get("order_id"))
-        elif decision.verdict == VERDICT_HOLD:
-            logger.info(f"HITL: request {request.request_id} held for human confirmation.")
-        else:
-            logger.info(f"BLOCKED: request {request.request_id} -- {decision.reasons}")
+        if outcome.verdict == "APPROVE" and execute_payment:
+            self.dispatch_payment(request.request_id)
+        return outcome
 
+    def _evaluate_locked(
+        self,
+        policy,
+        request,
+        scenario_tag,
+        actor_id,
+        execute_payment,
+        semantic=None,
+        work_lease=None,
+        actor_version=1,
+    ):
+        with agent_transaction(self.db, request.agent_id):
+            if actor_id != "internal" and database_authority():
+                row = (
+                    self.db.query(ServiceCredential)
+                    .filter_by(subject=actor_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                principal = principal_from_row(row, now=processing_time(self.db))
+                if (
+                    principal is None
+                    or principal.credential_version != actor_version
+                    or principal.role not in ("admin", "owner", "agent")
+                    or not principal.permits_agent(request.agent_id, self.db)
+                ):
+                    raise ConflictError(
+                        "Submitting authority changed before authorization"
+                    )
+            if work_lease is not None:
+                job = (
+                    self.db.query(EvaluationJob)
+                    .filter_by(job_id=work_lease["job_id"])
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if (
+                    job is None
+                    or job.status != "PROCESSING"
+                    or job.lease_token != work_lease["token"]
+                    or job.lease_expires_at is None
+                    or utc(job.lease_expires_at) <= processing_time(self.db)
+                ):
+                    raise ConflictError(
+                        "Job lease lost before authorization; durable request state must be checked"
+                    )
+                if processing_time(self.db) - utc(job.created_at) >= timedelta(
+                    seconds=integer(
+                        "SENTINEL_JOB_MAX_AGE_SECONDS", 300, minimum=30, maximum=3600
+                    )
+                ):
+                    raise ConflictError(
+                        "Job command expired before authorization; inspect durable request state"
+                    )
+            current = (
+                self.db.query(PolicyRecord)
+                .filter_by(agent_id=request.agent_id, active=True)
+                .order_by(PolicyRecord.version.desc())
+                .first()
+            )
+            if current:
+                policy = AgentPolicy.from_dict(current.policy_json)
+            elif actor_id != "internal":
+                raise ConflictError(
+                    "No active policy; authorization requires a current owner policy"
+                )
+            existing = (
+                self.db.query(TransactionRecord)
+                .filter_by(request_id=request.request_id)
+                .first()
+            )
+            if existing:
+                actual = {
+                    k: float(existing.amount) if k == "amount" else getattr(existing, k)
+                    for k in TransactionRequest.__dataclass_fields__
+                }
+                candidate = asdict(request)
+                if actor_id != "internal":
+                    for key in (
+                        "raw_agent_goal",
+                        "requested_at_iso",
+                        "requested_at_hour",
+                    ):
+                        candidate[key] = actual[key]
+                if request.merchant_id and request.merchant_id == actual["merchant_id"]:
+                    for key in (
+                        "merchant_name",
+                        "merchant_category",
+                        "merchant_version",
+                    ):
+                        candidate[key] = actual[key]
+                if actual != candidate or not existing.decision:
+                    raise ConflictError(
+                        "request_id is already bound to different or incomplete data"
+                    )
+                decision = decision_from_record(existing.decision)
+            else:
+                if actor_id != "internal":
+                    # Use the processing clock AFTER the agent lock. Queue order and
+                    # clock skew cannot hide an already reserved concurrent purchase.
+                    now = (
+                        self.db.execute(text("SELECT clock_timestamp()")).scalar_one()
+                        if self.db.bind.dialect.name == "postgresql"
+                        else datetime.now(timezone.utc)
+                    )
+                    request.requested_at_iso, request.requested_at_hour = (
+                        now.isoformat(),
+                        now.hour,
+                    )
+                if actor_id != "internal" or not request.raw_agent_goal.strip():
+                    request.raw_agent_goal = policy.authorized_goal
+                identity_error = resolve_merchant(self.db, policy, request)
+                history, reserved, attempts = self.audit.evaluation_context(
+                    request, policy
+                )
+                result = self.rule_engine.evaluate(
+                    policy,
+                    request,
+                    history,
+                    reserved_total_paise=reserved,
+                    attempt_count=attempts,
+                )
+                if identity_error:
+                    decision = Decision(
+                        request.request_id,
+                        "BLOCK",
+                        [identity_error],
+                        ["merchant_identity"],
+                        "rule_engine",
+                    )
+                elif result.outcome == ESCALATE:
+                    if semantic is None:
+                        self._refresh_case_index(request.agent_id, policy, request)
+                        return SemanticPreparation(
+                            AgentPolicy.from_dict(policy.to_dict()),
+                            TransactionRequest(**asdict(request)),
+                        )
+                    snapshot, decision, merchant_version = semantic
+                    if merchant_version != request.merchant_version:
+                        decision.verdict = "HOLD"
+                        decision.reasons = [
+                            "Merchant identity changed during semantic review"
+                        ]
+                        decision.checked_rules.append("merchant_identity_changed")
+                    if snapshot != policy.to_dict():
+                        decision.verdict = "HOLD"
+                        decision.reasons = [
+                            "Policy changed during semantic review; a fresh review is required"
+                        ]
+                        decision.checked_rules.append("semantic_policy_changed")
+                else:
+                    decision = result_to_decision(request, result)
+                self.audit.log_transaction(
+                    request, scenario_tag, actor_id, actor_version
+                )
+                if decision.verdict == "APPROVE":
+                    score = self.risk_scorer.evaluate(
+                        [
+                            h
+                            for h in history
+                            if utc_timestamp(h.request.requested_at_iso)
+                            <= utc_timestamp(request.requested_at_iso)
+                        ],
+                        request,
+                    )
+                    decision.risk_score = score.total
+                    if score.is_high_risk:
+                        decision.verdict = "HOLD"
+                        decision.reasons.append(RiskScorer.format_reason(score))
+                        decision.checked_rules.append("behavioral_baseline")
+                        decision.decided_by = "behavioral_baseline"
+                if decision.verdict != "BLOCK":
+                    report = assess(self.db, policy, request)
+                    self.db.add(
+                        IntelligenceAssessment(
+                            request_id=request.request_id, report=report
+                        )
+                    )
+                    if report["recommendation"] in ("HOLD", "BLOCK"):
+                        decision.verdict = report["recommendation"]
+                        decision.reasons.extend(report["signals"])
+                        decision.checked_rules.append("risk_intelligence")
+                        decision.decided_by = "risk_intelligence"
+                decision.policy_id, decision.policy_version = (
+                    policy.policy_id,
+                    policy.version,
+                )
+                self.audit.log_decision(decision, policy)
+                if decision.verdict == "APPROVE" and execute_payment:
+                    self.db.add(
+                        PaymentRecord(
+                            request_id=request.request_id,
+                            amount_paise=paise(request.amount),
+                            state="pending",
+                            updated_at=processing_time(self.db),
+                            authorization_policy_id=policy.policy_id,
+                            authorizing_credential_version=actor_version,
+                            authorized_merchant_version=request.merchant_version,
+                            dispatch_expires_at=processing_time(self.db)
+                            + timedelta(
+                                seconds=integer(
+                                    "SENTINEL_APPROVAL_TTL_SECONDS",
+                                    300,
+                                    minimum=30,
+                                    maximum=3600,
+                                )
+                            ),
+                            budget_day=utc_timestamp(request.requested_at_iso)
+                            .date()
+                            .isoformat(),
+                        )
+                    )
         return decision
 
-    def resolve_hold(self, request_id: str, human_verdict: str) -> dict:
-        """A human resolves a HOLD -- this is the HITL completion step.
-        Only APPROVE or BLOCK are valid human resolutions."""
-        if human_verdict not in (VERDICT_APPROVE, VERDICT_BLOCK):
-            raise ValueError("human_verdict must be APPROVE or BLOCK")
-
-        self.audit.resolve_hold(request_id, human_verdict)
-
-        if human_verdict == VERDICT_APPROVE:
-            record = self.db.query(DecisionRecord).filter_by(request_id=request_id).first()
-            tx = record.transaction if record else None
-            if tx:
-                result = self.gateway.create_order(
-                    amount_inr=tx.amount,
-                    request_id=request_id,
-                    notes={"agent_id": tx.agent_id, "merchant": tx.merchant_name, "human_approved": "true"},
+    def dispatch_payment(self, request_id):
+        # A durable pending row is an outbox entry. Claim before external IO.
+        # Unknown outcomes must be reconciled, NEVER blindly resubmitted.
+        with agent_transaction(self.db, GUARD_LOCK):
+            payment = (
+                self.db.query(PaymentRecord)
+                .filter_by(request_id=request_id)
+                .populate_existing()
+                .first()
+            )
+            if not payment:
+                return {"status": "not_sent"}
+            if payment.state != "pending":
+                return {"status": payment.state, "order_id": payment.order_id}
+            if payment.dispatch_expires_at is None or utc(
+                payment.dispatch_expires_at
+            ) <= processing_time(self.db):
+                payment.state, payment.error = (
+                    "expired",
+                    "Approval expired before dispatch; submit a fresh request",
                 )
-                self.audit.update_razorpay_status(request_id, result["status"], result.get("order_id"))
-                return result
+                payment.updated_at = processing_time(self.db)
+                self.audit.update_razorpay_status(request_id, "expired", None)
+                return {"status": "expired"}
+            blocked = (
+                (
+                    "Payment dispatch is paused by this deployment"
+                    if deployment_dispatch_paused()
+                    else None
+                )
+                or dispatch_authority(self.db, request_id)
+                or dispatch_binding(self.db, request_id)
+                or dispatch_permission(self.db, payment)
+                or confirmed_dispatch_threat(self.db, request_id)
+            )
+            if blocked:
+                payment.error = blocked
+                payment.updated_at = processing_time(self.db)
+                self.audit.update_razorpay_status(request_id, "guard_hold", None)
+                return {"status": "guard_hold", "reason": blocked}
+            claimed = self.db.execute(
+                update(PaymentRecord)
+                .where(
+                    PaymentRecord.request_id == request_id,
+                    PaymentRecord.state == "pending",
+                )
+                .values(
+                    state="processing", error=None, updated_at=processing_time(self.db)
+                )
+            ).rowcount
+            if claimed != 1:
+                raise ConflictError("Payment dispatch claim changed concurrently")
+            self.db.add(
+                DispatchClaim(
+                    request_id=request_id,
+                    amount_paise=payment.amount_paise,
+                    claimed_at=processing_time(self.db),
+                )
+            )
+            amount = payment.amount_paise / 100
+            merchant_id = (
+                self.db.query(TransactionRecord.merchant_id)
+                .filter_by(request_id=request_id)
+                .scalar()
+            )
+            notes = {"request_id": request_id}
+            if merchant_id:
+                notes["sentinel_merchant_id"] = merchant_id
+        # A freeze cannot recall a call already claimed. The global guard lock
+        # is released before IO and the claim is visible to subsequent checks.
+        try:
+            result = self.gateway.create_order(amount, request_id, notes)
+        except Exception:
+            result = {"status": "unknown", "order_id": None}
+        if not isinstance(result, dict):
+            result = {"status": "unknown"}
+        status = result.get("status", "unknown")
+        if status not in ("mock", "created", "failed", "unknown"):
+            status = "unknown"
+        reference = result.get("order_id")
+        if status in ("mock", "created") and (
+            not isinstance(reference, str) or not 1 <= len(reference) <= 200
+        ):
+            result["order_id"], status = None, "unknown"
+        payment = (
+            self.db.query(PaymentRecord)
+            .filter_by(request_id=request_id)
+            .populate_existing()
+            .with_for_update()
+            .one()
+        )
+        # Signed captures and operator reconciliation can finish before this
+        # response. Never overwrite a newer terminal provider state.
+        if payment.state in ("captured", "created", "mock"):
+            outcome = {"status": payment.state, "order_id": payment.order_id}
+            self.db.commit()
+            return outcome
+        payment.state, payment.order_id = status, result.get("order_id")
+        payment.updated_at = processing_time(self.db)
+        payment.error = result.get("error")
+        self.audit.update_razorpay_status(request_id, status, payment.order_id)
+        self.db.commit()
+        return {"status": status, "order_id": payment.order_id}
 
-        return {"status": "blocked_by_human"}
+    def resolve_hold(
+        self,
+        request_id,
+        human_verdict,
+        *,
+        reviewer_id="internal",
+        reason="Human review",
+        reviewer_principal=None,
+    ):
+        if human_verdict not in ("APPROVE", "BLOCK"):
+            raise ValueError("human_verdict must be APPROVE or BLOCK")
+        tx = self.db.query(TransactionRecord).filter_by(request_id=request_id).first()
+        if not tx:
+            raise LookupError("unknown request_id")
+        with agent_transaction(self.db, tx.agent_id):
+            if reviewer_principal is not None:
+                assert_current_principal(reviewer_principal, self.db)
+            record = (
+                self.db.query(DecisionRecord)
+                .filter_by(request_id=request_id)
+                .populate_existing()
+                .one()
+            )
+            if record.verdict != "HOLD" or record.human_override is not None:
+                raise ConflictError("only an unresolved HOLD can be resolved")
+            if human_verdict == "APPROVE":
+                p = (
+                    self.db.query(PolicyRecord)
+                    .filter_by(agent_id=tx.agent_id, active=True)
+                    .order_by(PolicyRecord.version.desc())
+                    .first()
+                )
+                if not p and reviewer_id != "internal":
+                    raise ConflictError(
+                        "No active policy; the owner must configure one before approval"
+                    )
+                policy = AgentPolicy.from_dict(
+                    p.policy_json if p else record.policy_snapshot
+                )
+                request = TransactionRequest(
+                    **{
+                        k: float(tx.amount) if k == "amount" else getattr(tx, k)
+                        for k in TransactionRequest.__dataclass_fields__
+                    }
+                )
+                # At review time current UTC clock controls budget/day/time in production.
+                import os
+
+                if (
+                    reviewer_id != "internal"
+                    or os.environ.get("SENTINEL_ENV") == "production"
+                ):
+                    now = processing_time(self.db)
+                    request.requested_at_hour, request.requested_at_iso = (
+                        now.hour,
+                        now.isoformat(),
+                    )
+                identity_error = resolve_merchant(self.db, policy, request)
+                if identity_error:
+                    raise ConflictError(identity_error)
+                history, reserved, attempts = self.audit.evaluation_context(
+                    request, policy
+                )
+                check = self.rule_engine.evaluate(
+                    policy,
+                    request,
+                    history,
+                    reserved_total_paise=reserved,
+                    attempt_count=attempts,
+                )
+                if check.outcome == "BLOCK":
+                    raise ConflictError(
+                        "Current policy rejects approval: " + "; ".join(check.reasons)
+                    )
+                current_intelligence = assess(self.db, policy, request)
+                if current_intelligence["recommendation"] == "BLOCK":
+                    raise ConflictError("Current threat intelligence rejects approval")
+                self.db.add(
+                    PaymentRecord(
+                        request_id=request_id,
+                        amount_paise=paise(tx.amount),
+                        state="pending",
+                        updated_at=processing_time(self.db),
+                        authorization_policy_id=policy.policy_id,
+                        authorized_merchant_version=request.merchant_version,
+                        authorizing_credential_version=reviewer_principal.credential_version
+                        if reviewer_principal
+                        else 1,
+                        dispatch_expires_at=processing_time(self.db)
+                        + timedelta(
+                            seconds=integer(
+                                "SENTINEL_APPROVAL_TTL_SECONDS",
+                                300,
+                                minimum=30,
+                                maximum=3600,
+                            )
+                        ),
+                        budget_day=utc_timestamp(request.requested_at_iso)
+                        .date()
+                        .isoformat(),
+                    )
+                )
+            record.human_override = human_verdict
+            record.resolved_by, record.resolved_at = (
+                reviewer_id,
+                processing_time(self.db),
+            )
+            record.resolution_reason = reason
+            self.db.add(
+                ReviewEvent(
+                    request_id=request_id,
+                    reviewer_id=reviewer_id,
+                    verdict=human_verdict,
+                    reason=reason,
+                )
+            )
+        return (
+            self.dispatch_payment(request_id)
+            if human_verdict == "APPROVE"
+            else {"status": "blocked_by_human"}
+        )

@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-11-16T18:53:45.269438+00:00",
+  "runtime": {
+    "python": "3.12.1",
+    "platform": "macOS-27.2.1-arm64-arm-64bit",
+    "llm_mode": "mock",
+    "gateway_mode": "mock",
+    "queue": "memory",
+    "database": "isolated SQLite"
+  },
+  "scope": "Pipeline microbenchmark; excludes HTTP/nginx/shared Redis and production hardware.",
+  "num_requests": 100,
+  "num_workers": 4,
+  "num_agents": 10,
+  "successful": 100,
+  "failed": 0,
+  "pending": 0,
+  "total_wall_seconds": 0.6750984999998764,
+  "successful_per_second": 148.1265326467446,
+  "observed_completion_ms": {
+    "median": 341.4885414995297
+  }
+}

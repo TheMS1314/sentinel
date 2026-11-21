@@ -21,12 +21,18 @@ when a human should confirm before anything happens.
 """
 
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import timedelta
+import re
+from app.core.validation import merchant_key, paise, utc_timestamp
 from dataclasses import dataclass
 
 from app.models.policy import (
-    AgentPolicy, TransactionRequest, Decision,
-    VERDICT_APPROVE, VERDICT_HOLD, VERDICT_BLOCK,
+    AgentPolicy,
+    TransactionRequest,
+    Decision,
+    VERDICT_APPROVE,
+    VERDICT_HOLD,
+    VERDICT_BLOCK,
 )
 
 RULE_ENGINE = "rule_engine"
@@ -36,7 +42,7 @@ ESCALATE = "ESCALATE"  # internal-only signal, not a final Decision verdict
 
 @dataclass
 class RuleEngineResult:
-    outcome: str                 # APPROVE / BLOCK / HOLD / ESCALATE
+    outcome: str  # APPROVE / BLOCK / HOLD / ESCALATE
     reasons: list[str]
     checked_rules: list[str]
 
@@ -53,6 +59,9 @@ class RuleEngine:
         policy: AgentPolicy,
         request: TransactionRequest,
         recent_history: list,  # list[HistoryItem]
+        *,
+        reserved_total_paise=None,
+        attempt_count=None,
     ) -> RuleEngineResult:
         reasons: list[str] = []
         checked: list[str] = []
@@ -66,7 +75,7 @@ class RuleEngine:
 
         # --- 1. Per-transaction amount cap ---
         checked.append("max_amount_per_txn")
-        if request.amount > policy.max_amount_per_txn:
+        if paise(request.amount) > paise(policy.max_amount_per_txn):
             reasons.append(
                 f"Amount ₹{request.amount:.2f} exceeds per-transaction cap "
                 f"of ₹{policy.max_amount_per_txn:.2f}."
@@ -74,39 +83,38 @@ class RuleEngine:
             return RuleEngineResult(VERDICT_BLOCK, reasons, checked)
 
         # --- 2. Daily total cap ---
-        # Only counts transactions that actually moved money (APPROVE, or a
-        # HOLD later approved by a human) -- a blocked or still-pending
-        # attempt never spent anything and must not count against the cap.
+        # Count commitments as well as captures. Unresolved holds and blocked
+        # attempts never create reservations and do not consume allowance.
         checked.append("max_daily_total")
-        today_total = sum(
-            item.request.amount for item in recent_history
-            if item.counts_as_spent and item.request.requested_at_iso[:10] == request.requested_at_iso[:10]
-        )
-        projected_total = today_total + request.amount
-        if projected_total > policy.max_daily_total:
-            reasons.append(
-                f"Projected daily total ₹{projected_total:.2f} would exceed "
-                f"daily cap of ₹{policy.max_daily_total:.2f} "
-                f"(already spent ₹{today_total:.2f} today)."
+        today_total_paise = sum(
+            paise(item.request.amount)
+            for item in recent_history
+            if item.counts_against_budget
+            and (
+                item.budget_day
+                or utc_timestamp(item.request.requested_at_iso).date().isoformat()
             )
-            return RuleEngineResult(VERDICT_BLOCK, reasons, checked)
+            == utc_timestamp(request.requested_at_iso).date().isoformat()
+        )
+        if reserved_total_paise is not None:
+            today_total_paise = reserved_total_paise
+        projected_total = today_total_paise + paise(request.amount)
+        if projected_total > paise(policy.max_daily_total):
+            return RuleEngineResult(
+                VERDICT_BLOCK,
+                [
+                    f"Projected daily total ₹{projected_total / 100:.2f} exceeds daily cap "
+                    f"₹{policy.max_daily_total:.2f} (reserved/captured ₹{today_total_paise / 100:.2f})."
+                ],
+                checked,
+            )
 
         # --- 3. Merchant allowlist (strict mode, if configured) ---
-        # Normalized comparison (case-fold + strip whitespace) -- an exact
-        # byte-for-byte match would let a blocked merchant trivially evade
-        # the check via different casing or stray whitespace (found via a
-        # targeted adversarial eval: 'shadystore', 'ShadyStore ', and
-        # 'SHADYSTORE' all bypassed an exact match against 'ShadyStore').
-        # This does NOT catch a genuinely different name like
-        # 'ShadyStore2' -- that would need fuzzy/substring matching, which
-        # has its own false-positive risk (a legitimate merchant whose name
-        # happens to contain a blocked substring) and is deliberately not
-        # implemented here; documented as a known follow-up, not silently
-        # assumed to be covered.
+        # Use the same exact canonical name as the local risk profiles.
         checked.append("merchant_allowlist")
-        normalized_merchant = request.merchant_name.strip().casefold()
+        normalized_merchant = merchant_key(request.merchant_name)
         if policy.allowed_merchants is not None:
-            allowed_normalized = {m.strip().casefold() for m in policy.allowed_merchants}
+            allowed_normalized = {merchant_key(m) for m in policy.allowed_merchants}
             if normalized_merchant not in allowed_normalized:
                 reasons.append(
                     f"Merchant '{request.merchant_name}' is not on the "
@@ -116,7 +124,7 @@ class RuleEngine:
 
         # --- 4. Merchant blocklist ---
         checked.append("merchant_blocklist")
-        blocked_normalized = {m.strip().casefold() for m in policy.blocked_merchants}
+        blocked_normalized = {merchant_key(m) for m in policy.blocked_merchants}
         if normalized_merchant in blocked_normalized:
             reasons.append(
                 f"Merchant '{request.merchant_name}' is explicitly blocked "
@@ -150,13 +158,18 @@ class RuleEngine:
         # some of those attempts were blocked. This is intentionally
         # different from the daily-total check above.
         checked.append("velocity_limit")
-        window_start = datetime.fromisoformat(request.requested_at_iso) - timedelta(
+        window_start = utc_timestamp(request.requested_at_iso) - timedelta(
             minutes=policy.velocity.window_minutes
         )
         recent_count = sum(
-            1 for item in recent_history
-            if datetime.fromisoformat(item.request.requested_at_iso) >= window_start
+            1
+            for item in recent_history
+            if window_start
+            <= utc_timestamp(item.request.requested_at_iso)
+            <= utc_timestamp(request.requested_at_iso)
         )
+        if attempt_count is not None:
+            recent_count = attempt_count
         if recent_count + 1 > policy.velocity.max_count:
             reasons.append(
                 f"{recent_count + 1} transactions within "
@@ -179,42 +192,54 @@ class RuleEngine:
         # semantic work. This is just a trigger, not a judgment.
         checked.append("intent_drift_heuristic")
 
-        STOPWORDS = {
-            "a", "an", "the", "buy", "purchase", "get", "acquire", "and", "or",
-            "for", "to", "of", "on", "in", "at", "with", "under", "budget",
-            "weekly", "monthly", "daily", "please", "now",
-        }
-
-        OVERRIDE_PATTERNS = (
-            "ignore previous", "ignore prior", "ignore all previous",
-            "disregard previous", "disregard prior", "new instructions",
-            "forget previous", "override", "system prompt",
+        override_patterns = (
+            "ignore previous",
+            "ignore prior",
+            "ignore all previous",
+            "disregard previous",
+            "disregard prior",
+            "new instructions",
+            "forget previous",
+            "override",
+            "system prompt",
+            "spend freely",
         )
+        intent = request.stated_intent.casefold()
+        if any(pattern in intent for pattern in override_patterns):
+            return RuleEngineResult(
+                VERDICT_BLOCK,
+                ["Explicit instruction override violates the authorized goal."],
+                checked,
+            )
+        if not request.raw_agent_goal.strip():
+            return RuleEngineResult(
+                VERDICT_HOLD, ["No trusted authorized goal is available."], checked
+            )
 
-        if request.raw_agent_goal:
-            intent_lower = request.stated_intent.lower()
-            override_detected = any(p in intent_lower for p in OVERRIDE_PATTERNS)
+        # Only a canonical restatement of the goal is a deterministic fast path.
+        # A shared word is insufficient; any added purpose reaches semantic review.
+        def canonical(text):
+            text = re.sub(r"\bunder budget\b", "", text.casefold())
+            text = re.sub(r"\b(buy|purchase|get|please)\b", "", text)
+            return " ".join(re.findall(r"\w+", text))
 
-            goal_words = set(request.raw_agent_goal.lower().split()) - STOPWORDS
-            intent_words = set(intent_lower.split()) - STOPWORDS
-            overlap = goal_words & intent_words
-
-            if override_detected or not overlap:
-                reason = (
-                    "Stated intent contains an instruction-override pattern."
-                    if override_detected else
-                    "Stated intent shares no meaningful keywords with the "
-                    "agent's original authorized goal -- needs semantic review."
-                )
-                reasons.append(reason)
-                return RuleEngineResult(ESCALATE, reasons, checked)
+        if canonical(intent) != canonical(request.raw_agent_goal) or not canonical(
+            intent
+        ):
+            return RuleEngineResult(
+                ESCALATE,
+                ["Intent differs from the authorized goal; semantic review required."],
+                checked,
+            )
 
         # --- All deterministic checks passed cleanly ---
         reasons.append("All deterministic policy checks passed.")
         return RuleEngineResult(VERDICT_APPROVE, reasons, checked)
 
 
-def result_to_decision(request: TransactionRequest, result: RuleEngineResult) -> Decision:
+def result_to_decision(
+    request: TransactionRequest, result: RuleEngineResult
+) -> Decision:
     """Convert a RuleEngineResult directly to a final Decision (used when
     the rule engine's outcome is final, i.e. not ESCALATE)."""
     return Decision(

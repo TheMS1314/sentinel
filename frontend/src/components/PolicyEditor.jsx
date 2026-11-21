@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { ShieldCheck, Save } from "lucide-react";
 
 function Field({ label, children }) {
@@ -13,9 +13,11 @@ function Field({ label, children }) {
 const DEFAULT_FORM = {
   agent_id: "agent_demo_1",
   owner_human_id: "human_demo",
+  authorized_goal: "buy weekly groceries under budget",
   max_amount_per_txn: 2000,
   max_daily_total: 5000,
   allowed_categories: "grocery",
+  allowed_merchants: "",
   blocked_merchants: "ShadyStore, UnverifiedGoods",
   time_window_start: 6,
   time_window_end: 22,
@@ -23,42 +25,39 @@ const DEFAULT_FORM = {
   velocity_window_minutes: 1440,
 };
 
-export default function PolicyEditor({ onCreatePolicy, currentPolicy, agentId }) {
-  const [form, setForm] = useState({ ...DEFAULT_FORM, agent_id: agentId || DEFAULT_FORM.agent_id });
+function policyForm(currentPolicy, agentId) {
+  const p = currentPolicy?.policy;
+  if (!p || p.agent_id !== agentId) return { ...DEFAULT_FORM, agent_id: agentId || DEFAULT_FORM.agent_id };
+  return {
+    agent_id: p.agent_id, owner_human_id: p.owner_human_id,
+    authorized_goal: p.authorized_goal || DEFAULT_FORM.authorized_goal,
+    allowed_merchants: (p.allowed_merchants || []).join(', '),
+    max_amount_per_txn: p.max_amount_per_txn, max_daily_total: p.max_daily_total,
+    allowed_categories: (p.allowed_categories || []).join(', '),
+    blocked_merchants: (p.blocked_merchants || []).join(', '),
+    time_window_start: p.time_window?.start_hour ?? 6, time_window_end: p.time_window?.end_hour ?? 22,
+    velocity_max_count: p.velocity?.max_count ?? 3, velocity_window_minutes: p.velocity?.window_minutes ?? 1440,
+  };
+}
 
-  useEffect(() => {
-    if (currentPolicy?.policy) {
-      const p = currentPolicy.policy;
-      setForm({
-        agent_id: p.agent_id,
-        owner_human_id: p.owner_human_id,
-        max_amount_per_txn: p.max_amount_per_txn,
-        max_daily_total: p.max_daily_total,
-        allowed_categories: (p.allowed_categories || []).join(", "),
-        blocked_merchants: (p.blocked_merchants || []).join(", "),
-        time_window_start: p.time_window?.start_hour ?? 6,
-        time_window_end: p.time_window?.end_hour ?? 22,
-        velocity_max_count: p.velocity?.max_count ?? 3,
-        velocity_window_minutes: p.velocity?.window_minutes ?? 1440,
-      });
-    } else if (agentId) {
-      // Switched to an agent with no policy yet (or a brand-new one
-      // about to be created) -- reset to sane defaults but keep
-      // whichever agent is actually selected, rather than silently
-      // showing stale form data from the previously selected agent.
-      setForm((f) => ({ ...DEFAULT_FORM, agent_id: agentId }));
-    }
-  }, [currentPolicy, agentId]);
+export default function PolicyEditor(props) {
+  return <PolicyEditorForm key={`${props.agentId}:${props.currentPolicy?.policy_id || 'new'}`} {...props} />;
+}
+
+function PolicyEditorForm({ onCreatePolicy, currentPolicy, agentId, ownerId }) {
+  const [form, setForm] = useState(() => policyForm(currentPolicy, agentId));
 
   const update = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
   const submit = () => {
     onCreatePolicy({
       agent_id: form.agent_id,
-      owner_human_id: form.owner_human_id,
+      owner_human_id: ownerId || form.owner_human_id,
+      authorized_goal: form.authorized_goal,
       max_amount_per_txn: parseFloat(form.max_amount_per_txn),
       max_daily_total: parseFloat(form.max_daily_total),
       allowed_categories: form.allowed_categories.split(",").map((s) => s.trim()).filter(Boolean),
+      allowed_merchants: form.allowed_merchants.trim() ? form.allowed_merchants.split(",").map(s => s.trim()).filter(Boolean) : null,
       blocked_merchants: form.blocked_merchants.split(",").map((s) => s.trim()).filter(Boolean),
       time_window_start: parseInt(form.time_window_start),
       time_window_end: parseInt(form.time_window_end),
@@ -77,6 +76,9 @@ export default function PolicyEditor({ onCreatePolicy, currentPolicy, agentId })
       </div>
 
       <div className="grid grid-cols-2 gap-4">
+        <Field label="Authorized goal">
+          <input className="input" value={form.authorized_goal} onChange={update("authorized_goal")} />
+        </Field>
         <Field label="Agent ID">
           <input
             className="input"
@@ -86,7 +88,7 @@ export default function PolicyEditor({ onCreatePolicy, currentPolicy, agentId })
           />
         </Field>
         <Field label="Owner (human)">
-          <input className="input" value={form.owner_human_id} onChange={update("owner_human_id")} />
+          <input className="input" value={ownerId || form.owner_human_id} readOnly={Boolean(ownerId)} onChange={update("owner_human_id")} />
         </Field>
         <Field label="Max per transaction (₹)">
           <input className="input" type="number" value={form.max_amount_per_txn} onChange={update("max_amount_per_txn")} />
@@ -97,13 +99,16 @@ export default function PolicyEditor({ onCreatePolicy, currentPolicy, agentId })
         <Field label="Allowed categories">
           <input className="input" value={form.allowed_categories} onChange={update("allowed_categories")} />
         </Field>
+        <Field label="Allowed merchants (optional)">
+          <input className="input" value={form.allowed_merchants} onChange={update("allowed_merchants")} />
+        </Field>
         <Field label="Blocked merchants">
           <input className="input" value={form.blocked_merchants} onChange={update("blocked_merchants")} />
         </Field>
-        <Field label="Time window start (hr)">
+        <Field label="Time window start (UTC hour)">
           <input className="input" type="number" value={form.time_window_start} onChange={update("time_window_start")} />
         </Field>
-        <Field label="Time window end (hr)">
+        <Field label="Time window end (UTC hour)">
           <input className="input" type="number" value={form.time_window_end} onChange={update("time_window_end")} />
         </Field>
         <Field label="Max transactions / window">

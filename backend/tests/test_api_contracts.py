@@ -28,7 +28,16 @@ os.environ.setdefault("SENTINEL_RATE_LIMIT_REQUESTS", "5000")
 os.environ.setdefault("SENTINEL_RATE_LIMIT_WINDOW_SECONDS", "60")
 
 from app.api.main import app  # noqa: E402
-from app.models.db import Base, engine, SessionLocal, PolicyRecord, TransactionRecord, DecisionRecord  # noqa: E402
+from app.models.db import (
+    Base,
+    engine,
+    SessionLocal,
+    PolicyRecord,
+    TransactionRecord,
+    DecisionRecord,
+    PaymentRecord,
+    ReviewEvent,
+)  # noqa: E402
 
 HEADERS = {"X-API-Key": "test-key-contracts"}
 
@@ -38,6 +47,8 @@ def clean_db():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        db.query(ReviewEvent).delete()
+        db.query(PaymentRecord).delete()
         db.query(DecisionRecord).delete()
         db.query(TransactionRecord).delete()
         db.query(PolicyRecord).delete()
@@ -62,36 +73,55 @@ def client():
 
 
 def _seed_policy(db, agent_id="agent_x"):
-    db.add(PolicyRecord(
-        policy_id=f"pol_{agent_id}", agent_id=agent_id, owner_human_id="human_x",
-        version=1, active=True,
-        policy_json={
-            "policy_id": f"pol_{agent_id}", "agent_id": agent_id, "owner_human_id": "human_x",
-            "max_amount_per_txn": 2000.0, "max_daily_total": 5000.0,
-            "allowed_categories": ["grocery"], "blocked_merchants": [], "allowed_merchants": None,
-            "time_window": {"start_hour": 6, "end_hour": 22},
-            "velocity": {"max_count": 3, "window_minutes": 1440},
-            "active": True, "version": 1,
-        },
-    ))
+    db.add(
+        PolicyRecord(
+            policy_id=f"pol_{agent_id}",
+            agent_id=agent_id,
+            owner_human_id="human_x",
+            version=1,
+            active=True,
+            policy_json={
+                "policy_id": f"pol_{agent_id}",
+                "agent_id": agent_id,
+                "owner_human_id": "human_x",
+                "max_amount_per_txn": 2000.0,
+                "max_daily_total": 5000.0,
+                "allowed_categories": ["grocery"],
+                "blocked_merchants": [],
+                "allowed_merchants": None,
+                "time_window": {"start_hour": 6, "end_hour": 22},
+                "velocity": {"max_count": 3, "window_minutes": 1440},
+                "active": True,
+                "version": 1,
+            },
+        )
+    )
 
 
 def _seed_transactions(db, n=7, agent_id="agent_x"):
     for i in range(n):
         tx = TransactionRecord(
-            request_id=f"req_{agent_id}_{i}", agent_id=agent_id,
-            merchant_name=f"Merchant{i}", merchant_category="grocery",
-            amount=float(10 + i), requested_at_hour=10,
-            requested_at_iso=f"2026-08-{10+i:02d}T10:00:00",
-            stated_intent="buy stuff", scenario_tag="test",
+            request_id=f"req_{agent_id}_{i}",
+            agent_id=agent_id,
+            merchant_name=f"Merchant{i}",
+            merchant_category="grocery",
+            amount=float(10 + i),
+            requested_at_hour=10,
+            requested_at_iso=f"2026-08-{10 + i:02d}T10:00:00",
+            stated_intent="buy stuff",
+            scenario_tag="test",
         )
         db.add(tx)
         db.flush()
-        db.add(DecisionRecord(
-            request_id=tx.request_id,
-            verdict="BLOCK" if i % 3 == 0 else "APPROVE",
-            reasons=["r"], checked_rules=["r"], decided_by="rule_engine",
-        ))
+        db.add(
+            DecisionRecord(
+                request_id=tx.request_id,
+                verdict="BLOCK" if i % 3 == 0 else "APPROVE",
+                reasons=["r"],
+                checked_rules=["r"],
+                decided_by="rule_engine",
+            )
+        )
 
 
 class TestPagination:
@@ -104,7 +134,13 @@ class TestPagination:
         resp = client.get("/transactions?page=1&page_size=3", headers=HEADERS)
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body.keys()) == {"items", "page", "page_size", "total", "total_pages"}
+        assert set(body.keys()) == {
+            "items",
+            "page",
+            "page_size",
+            "total",
+            "total_pages",
+        }
         assert body["total"] == 7
         assert body["page_size"] == 3
         assert len(body["items"]) == 3
@@ -142,7 +178,9 @@ class TestPagination:
         db.commit()
         db.close()
 
-        resp = client.get("/transactions?page=1&page_size=50&verdict=BLOCK", headers=HEADERS)
+        resp = client.get(
+            "/transactions?page=1&page_size=50&verdict=BLOCK", headers=HEADERS
+        )
         body = resp.json()
         assert body["total"] == 2
         assert all(t["verdict"] == "BLOCK" for t in body["items"])
@@ -166,7 +204,9 @@ class TestPagination:
         assert "created_at_iso" in item
         assert item["created_at_iso"] is not None
         # offset-aware: must end in +00:00 or Z, not a bare naive string
-        assert item["created_at_iso"].endswith("+00:00") or item["created_at_iso"].endswith("Z")
+        assert item["created_at_iso"].endswith("+00:00") or item[
+            "created_at_iso"
+        ].endswith("Z")
 
     def test_search_filter_matches_merchant_name(self, client):
         db = SessionLocal()
@@ -174,7 +214,9 @@ class TestPagination:
         db.commit()
         db.close()
 
-        resp = client.get("/transactions?page=1&page_size=50&search=Merchant1", headers=HEADERS)
+        resp = client.get(
+            "/transactions?page=1&page_size=50&search=Merchant1", headers=HEADERS
+        )
         body = resp.json()
         assert body["total"] == 1
         assert body["items"][0]["merchant_name"] == "Merchant1"
@@ -205,8 +247,9 @@ class TestPagination:
         assert resp.status_code == 200
         select_queries = [q for q in queries if q.strip().upper().startswith("SELECT")]
         # One count query + one joined select -- not 1 + 20.
-        assert len(select_queries) <= 3, f"expected O(1) queries, got {len(select_queries)}: {select_queries}"
-
+        assert len(select_queries) <= 3, (
+            f"expected O(1) queries, got {len(select_queries)}: {select_queries}"
+        )
 
     def test_page_beyond_final_page_returns_empty_items_not_error(self, client):
         db = SessionLocal()
@@ -246,7 +289,6 @@ class TestPagination:
         assert body["items"] == []
         assert body["total_pages"] >= 1
 
-
     def test_golden_eval_transactions_excluded_from_live_feed(self, client):
         """Regression test for a real bug found in this pass: running
         the eval harness persists golden_eval/golden_history-tagged
@@ -261,23 +303,35 @@ class TestPagination:
         # Simulate what eval_harness.py actually persists.
         for i, tag in enumerate(["golden_eval", "golden_history"]):
             tx = TransactionRecord(
-                request_id=f"req_golden_{i}", agent_id="agent_eval_internal",
-                merchant_name="GoldenMerchant", merchant_category="grocery",
-                amount=99.0, requested_at_hour=10, requested_at_iso="2026-08-01T10:00:00",
-                stated_intent="golden case", scenario_tag=tag,
+                request_id=f"req_golden_{i}",
+                agent_id="agent_eval_internal",
+                merchant_name="GoldenMerchant",
+                merchant_category="grocery",
+                amount=99.0,
+                requested_at_hour=10,
+                requested_at_iso="2026-08-01T10:00:00",
+                stated_intent="golden case",
+                scenario_tag=tag,
             )
             db.add(tx)
             db.flush()
-            db.add(DecisionRecord(
-                request_id=tx.request_id, verdict="APPROVE", reasons=["r"],
-                checked_rules=["r"], decided_by="rule_engine",
-            ))
+            db.add(
+                DecisionRecord(
+                    request_id=tx.request_id,
+                    verdict="APPROVE",
+                    reasons=["r"],
+                    checked_rules=["r"],
+                    decided_by="rule_engine",
+                )
+            )
         db.commit()
         db.close()
 
         resp = client.get("/transactions?page=1&page_size=50", headers=HEADERS)
         body = resp.json()
-        assert body["total"] == 2, f"golden-tagged rows leaked into the live feed: total={body['total']}"
+        assert body["total"] == 2, (
+            f"golden-tagged rows leaked into the live feed: total={body['total']}"
+        )
         assert all(not t["request_id"].startswith("req_golden_") for t in body["items"])
 
         scenarios = client.get("/transactions/scenarios", headers=HEADERS).json()
@@ -285,7 +339,9 @@ class TestPagination:
         assert "golden_history" not in scenarios
 
         summary = client.get("/transactions/summary", headers=HEADERS).json()
-        assert summary["total"] == 2, f"golden-tagged rows leaked into summary counts: total={summary['total']}"
+        assert summary["total"] == 2, (
+            f"golden-tagged rows leaked into summary counts: total={summary['total']}"
+        )
 
 
 class TestSummary:
@@ -311,8 +367,12 @@ class TestSummary:
         db.commit()
         db.close()
 
-        alpha = client.get("/transactions/summary?agent_id=agent_alpha", headers=HEADERS).json()
-        beta = client.get("/transactions/summary?agent_id=agent_beta", headers=HEADERS).json()
+        alpha = client.get(
+            "/transactions/summary?agent_id=agent_alpha", headers=HEADERS
+        ).json()
+        beta = client.get(
+            "/transactions/summary?agent_id=agent_beta", headers=HEADERS
+        ).json()
         both = client.get("/transactions/summary", headers=HEADERS).json()
 
         assert alpha["total"] == 3
@@ -330,20 +390,26 @@ class TestBatchJobs:
         payload = {
             "requests": [
                 {
-                    "agent_id": "agent_batch", "merchant_name": "FreshMart",
-                    "merchant_category": "grocery", "amount": 20,
-                    "requested_at_hour": 10, "requested_at_iso": "2026-09-01T10:00:00",
+                    "agent_id": "agent_batch",
+                    "merchant_name": "FreshMart",
+                    "merchant_category": "grocery",
+                    "amount": 20,
+                    "requested_at_hour": 10,
+                    "requested_at_iso": "2026-09-01T10:00:00",
                     "stated_intent": "buy groceries",
                 }
                 for _ in range(3)
             ]
         }
-        resp = client.post("/transactions/evaluate-batch", json=payload, headers=HEADERS)
+        resp = client.post(
+            "/transactions/evaluate-batch", json=payload, headers=HEADERS
+        )
         assert resp.status_code == 200
         batch_id = resp.json()["batch_id"]
         assert len(resp.json()["job_ids"]) == 3
 
         import time
+
         deadline = time.monotonic() + 10
         status = None
         while time.monotonic() < deadline:
@@ -355,13 +421,17 @@ class TestBatchJobs:
         if status is None or not status["complete"]:
             for jid in resp.json()["job_ids"]:
                 print("JOB", jid, client.get(f"/jobs/{jid}", headers=HEADERS).json())
-        assert status is not None and status["complete"] is True, f"batch never completed: {status}"
+        assert status is not None and status["complete"] is True, (
+            f"batch never completed: {status}"
+        )
         assert status["total"] == 3
         assert status["by_status"]["DONE"] == 3
 
     def test_empty_batch_rejected(self, client):
-        resp = client.post("/transactions/evaluate-batch", json={"requests": []}, headers=HEADERS)
-        assert resp.status_code == 400
+        resp = client.post(
+            "/transactions/evaluate-batch", json={"requests": []}, headers=HEADERS
+        )
+        assert resp.status_code == 422
         assert "error" in resp.json()
 
     def test_unknown_batch_returns_404_envelope(self, client):

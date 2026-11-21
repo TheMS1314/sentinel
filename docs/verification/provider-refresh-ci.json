@@ -1,0 +1,77 @@
+{
+  "implementation_sha": "d5601fbc3ad36b2702e5acf5cfff50a22d97ebc6",
+  "workflow_url": "https://github.com/TheMS1314/sentinel/actions/runs/44091900923",
+  "date": "2026-11-17",
+  "schema_revision": "0008_provider_refresh",
+  "backend_tests_passed": 269,
+  "frontend_tests_passed": 19,
+  "container_acceptance_checks": [
+    "built_frontend",
+    "policy_create",
+    "approve",
+    "replay",
+    "changed_replay_conflicts",
+    "hard_cap",
+    "merchant_directory_registration",
+    "merchant_category_cannot_be_spoofed",
+    "http_concurrency",
+    "shared_credential_issue",
+    "shared_credential_authentication",
+    "shared_credential_revoke",
+    "revocation_reaches_all_replicas",
+    "freeze",
+    "frozen_approval",
+    "cancel_undispatched",
+    "unfreeze",
+    "durable_batch_accepted",
+    "quota_outage_fails_closed",
+    "liveness_survives_quota_outage",
+    "readiness_reports_quota_outage",
+    "accepted_jobs_survive_redis_outage",
+    "database_outage_fails_closed",
+    "liveness_survives_database_outage",
+    "readiness_reports_database_outage",
+    "database_restart_recovery",
+    "one_backend_down",
+    "backend_recreation_dns",
+    "backup_restore_records_and_schema",
+    "restricted_runtime_database_authority",
+    "incident_create",
+    "signed_https_alert_delivered",
+    "https_sink_received_unique_event",
+    "protected_operational_metrics",
+    "scheduled_provider_merchant",
+    "scheduled_provider_binding",
+    "scheduled_provider_missing_key_is_explicit",
+    "scheduled_provider_absence_holds_payment",
+    "scheduled_provider_replica_claim_is_unique"
+  ],
+  "jobs": {
+    "containers": {
+      "id": 134068884148,
+      "conclusion": "success"
+    },
+    "backend": {
+      "id": 134068884697,
+      "conclusion": "success"
+    },
+    "frontend": {
+      "id": 134068884707,
+      "conclusion": "success"
+    },
+    "deployment-schema": {
+      "id": 134068884884,
+      "conclusion": "success"
+    }
+  },
+  "scopes": {
+    "provider_refresh": "Real PostgreSQL/replica scheduler; explicit missing-credential evidence and financial HOLD; no licensed calls",
+    "fencing": "Concurrent claim, lease recovery, stale response rejection, mapping version and database-clock expiry tests",
+    "migration": "Fresh, legacy and populated provider-evidence upgrade without opt-in or reattestation",
+    "reports": "Owner-only permissions before writing, atomic replacement, failure preservation and symlink-target protection",
+    "deployment": "Disposable Kubernetes API schema dry run and actual nginx config validation"
+  },
+  "runtime_audits": "No known Python runtime/npm vulnerabilities reported",
+  "commercial_live_verification": "not_run; licensed access and authorized probe entities still required",
+  "main_merged": false
+}

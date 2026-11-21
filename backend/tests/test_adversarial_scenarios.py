@@ -16,8 +16,10 @@ APPROVEd. That's the actual security property that matters here --
 Sentinel existing to catch these five patterns is the whole point of
 the project.
 """
+
 from __future__ import annotations
 import os
+
 os.environ.setdefault("OPENROUTER_API_KEY", "")  # force mock mode
 
 import pytest
@@ -45,8 +47,11 @@ def standard_policy(agent_id: str) -> AgentPolicy:
     """Mirrors the demo seed's default policy shape so these tests
     exercise the same constraints a real deployment would ship with."""
     return AgentPolicy(
-        policy_id=f"pol_{agent_id}", agent_id=agent_id, owner_human_id="human_test",
-        max_amount_per_txn=2000.0, max_daily_total=5000.0,
+        policy_id=f"pol_{agent_id}",
+        agent_id=agent_id,
+        owner_human_id="human_test",
+        max_amount_per_txn=2000.0,
+        max_daily_total=5000.0,
         allowed_categories=["grocery"],
         blocked_merchants=["ShadyStore", "UnverifiedGoods"],
         time_window=TimeWindow(start_hour=6, end_hour=22),
@@ -56,7 +61,13 @@ def standard_policy(agent_id: str) -> AgentPolicy:
 
 def run_drift(agent_id: str, drift_type: str, n: int = 3):
     agent = PurchasingAgent()
-    return agent.run(agent_id=agent_id, goal="buy groceries", mode="adversarial", drift_type=drift_type, num_transactions=n)
+    return agent.run(
+        agent_id=agent_id,
+        goal="buy weekly groceries under budget",
+        mode="adversarial",
+        drift_type=drift_type,
+        num_transactions=n,
+    )
 
 
 def evaluate_all(db, policy, requests):
@@ -81,7 +92,9 @@ class TestAdversarialScenarioCoverage:
         agent_id = f"agent_cat_{uuid.uuid4().hex[:6]}"
         policy = standard_policy(agent_id)
         requests = run_drift(agent_id, "category_drift")
-        assert all(r.merchant_category not in policy.allowed_categories for r in requests)
+        assert all(
+            r.merchant_category not in policy.allowed_categories for r in requests
+        )
         decisions = evaluate_all(db, policy, requests)
         assert all(d.verdict != VERDICT_APPROVE for d in decisions), (
             f"category_drift silently approved: {[d.verdict for d in decisions]}"
@@ -93,7 +106,9 @@ class TestAdversarialScenarioCoverage:
         # velocity_spike clusters transactions 2 minutes apart -- generate
         # more than the policy's max_count so at least one must trip the
         # velocity rule once prior transactions in this run are on record.
-        requests = run_drift(agent_id, "velocity_spike", n=policy.velocity.max_count + 2)
+        requests = run_drift(
+            agent_id, "velocity_spike", n=policy.velocity.max_count + 2
+        )
         orchestrator = SentinelOrchestrator(db)
         decisions = [orchestrator.evaluate_transaction(policy, r) for r in requests]
         assert any(d.verdict != VERDICT_APPROVE for d in decisions), (
@@ -107,7 +122,14 @@ class TestAdversarialScenarioCoverage:
         assert all(r.requested_at_hour == 2 for r in requests), (
             "generator regression: off_hours must force a 2am timestamp"
         )
-        assert all(not (policy.time_window.start_hour <= r.requested_at_hour < policy.time_window.end_hour) for r in requests)
+        assert all(
+            not (
+                policy.time_window.start_hour
+                <= r.requested_at_hour
+                < policy.time_window.end_hour
+            )
+            for r in requests
+        )
         decisions = evaluate_all(db, policy, requests)
         assert all(d.verdict != VERDICT_APPROVE for d in decisions), (
             f"off_hours silently approved: {[d.verdict for d in decisions]}"

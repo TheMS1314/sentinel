@@ -2,13 +2,20 @@
 Tests for the behavioral baseline anomaly layer.
 Run with: pytest backend/tests/test_behavioral_baseline.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from app.models.policy import TransactionRequest, HistoryItem, VERDICT_APPROVE, VERDICT_BLOCK
-from app.core.behavioral_baseline import BehavioralBaseline, MIN_HISTORY_FOR_BASELINE
+from app.models.policy import (
+    TransactionRequest,
+    HistoryItem,
+    VERDICT_APPROVE,
+    VERDICT_BLOCK,
+)
+from app.core.behavioral_baseline import BehavioralBaseline
 
 
 def make_request(**overrides) -> TransactionRequest:
@@ -41,8 +48,12 @@ def make_approved_history(amounts, hours=None):
 class TestInsufficientHistory:
     def test_below_minimum_history_never_flags(self):
         baseline = BehavioralBaseline()
-        history = make_approved_history([300.0, 320.0])  # below MIN_HISTORY_FOR_BASELINE
-        result = baseline.evaluate(history, make_request(amount=5000.0))  # would be a huge outlier if scored
+        history = make_approved_history(
+            [300.0, 320.0]
+        )  # below MIN_HISTORY_FOR_BASELINE
+        result = baseline.evaluate(
+            history, make_request(amount=5000.0)
+        )  # would be a huge outlier if scored
         assert result.is_anomaly is False
         assert "insufficient" in result.reason.lower()
 
@@ -77,7 +88,9 @@ class TestHourOutlier:
             [200.0, 210.0, 190.0, 205.0, 195.0, 200.0],
             hours=[9, 10, 11, 9, 10, 11],
         )
-        result = baseline.evaluate(history, make_request(amount=200.0, requested_at_hour=23))
+        result = baseline.evaluate(
+            history, make_request(amount=200.0, requested_at_hour=23)
+        )
         assert result.is_anomaly is True
         assert "typical" in result.reason.lower()
 
@@ -88,7 +101,9 @@ class TestHourOutlier:
             hours=[9, 10, 11, 9, 10, 11],
         )
         # within HOUR_OUTLIER_MARGIN of the observed 9-11 range
-        result = baseline.evaluate(history, make_request(amount=200.0, requested_at_hour=13))
+        result = baseline.evaluate(
+            history, make_request(amount=200.0, requested_at_hour=13)
+        )
         assert result.is_anomaly is False
 
 
@@ -100,7 +115,10 @@ class TestOnlyCountsApprovedHistory:
         baseline = BehavioralBaseline()
         approved = make_approved_history([200.0, 210.0, 190.0, 205.0, 195.0])
         blocked = [
-            HistoryItem(request=make_request(request_id="blocked1", amount=9000.0), verdict=VERDICT_BLOCK)
+            HistoryItem(
+                request=make_request(request_id="blocked1", amount=9000.0),
+                verdict=VERDICT_BLOCK,
+            )
         ]
         history = approved + blocked
         result = baseline.evaluate(history, make_request(amount=205.0))

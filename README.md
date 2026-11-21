@@ -1,628 +1,165 @@
 # Sentinel — Agent Payment Trust Layer
 
-Sentinel is a trust and policy layer that sits between an AI purchasing agent and a payment gateway. Before an agent can cause money movement, Sentinel evaluates the transaction against a human-owned policy, records the request, records the decision, and either approves it for the gateway, holds it for human review, or blocks it.
+Sentinel evaluates proposed agent purchases against an owner-configured policy, records its decision, and produces **APPROVE**, **HOLD**, or **BLOCK**. It is a test-payment research/demo application, not a production banking service.
 
-The key design idea is simple:
+## Decision flow
 
-> **An AI agent may be autonomous, but its payment authority should remain bounded, explainable, and auditable.**
-
-
----
-
-## 1. What problem Sentinel solves
-
-Giving an AI agent standing payment authority creates a failure mode that is different from ordinary fraud: **behavioral drift**.
-
-An agent can remain broadly aligned with its goal while gradually:
-
-- spending beyond a per-transaction or daily cap,
-- buying outside an authorized category,
-- transacting outside allowed hours,
-- producing a suspicious burst of attempts,
-- attempting a blocked merchant,
-- or following injected instructions that conflict with the human-owned goal.
-
-Sentinel treats the agent's policy as the authority boundary and evaluates each transaction at the moment it is attempted. Uncertainty is deliberately conservative: a genuinely ambiguous request can become `HOLD` instead of being guessed into `APPROVE`.
-
----
-
-## 2. Core decision model
-
-The decision pipeline is intentionally layered.
-
-```text
-AI Purchasing Agent
-        |
-        | TransactionRequest
-        v
-+-----------------------------+
-| Sentinel                    |
-|                             |
-| 1. Fetch agent history      |
-| 2. Audit-log request        |
-| 3. Deterministic rules      |
-|      |                      |
-|      +--> BLOCK             |
-|      +--> HOLD (velocity)  |
-|      +--> ESCALATE          |
-|      +--> APPROVE           |
-|             |
-|       escalation only       |
-|             v               |
-| 4. TF-IDF case retrieval    |
-| 5. LLM reasoner             |
-|      |                      |
-|      +--> APPROVE/HOLD/BLOCK|
-|                             |
-| 6. Audit-log decision       |
-| 7. APPROVE -> payment       |
-|    HOLD    -> human review  |
-|    BLOCK   -> stop          |
-+-----------------------------+
-        |
-        v
-Razorpay test-mode gateway
+```mermaid
+flowchart TD
+    A[Scoped caller] --> P[Load owner policy and trusted goal]
+    P --> L[Acquire per-agent database lock]
+    L --> R[Exact money and policy checks]
+    R -->|Violation| B[BLOCK]
+    R -->|Velocity| H[HOLD]
+    R -->|Ambiguous intent| M[Scoped retrieval and reasoner]
+    R -->|Canonical goal restatement| S[Behavioral risk]
+    M -->|Approve| S
+    M -->|Unclear or unavailable| H
+    M -->|Reject| B
+    S -->|High heuristic score| H
+    S -->|Allowed| O[Commit approval and budget reservation]
+    O --> G[Claim durable payment outbox]
+    G --> T[Razorpay test order or explicit mock]
 ```
 
-### Why the LLM is not the first layer
-
-A deterministic amount or category violation does not become safer because an LLM was asked to rediscover it. The rule engine is fast, reproducible, auditable, and does not depend on probabilistic model behavior. The LLM is reserved for cases where the deterministic layer cannot make a sufficiently confident judgment about intent drift.
-
----
-
-## 3. Policy controls
-
-Each agent has an isolated, versioned policy containing:
-
-| Control | Meaning |
-|---|---|
-| `max_amount_per_txn` | Maximum amount for one transaction |
-| `max_daily_total` | Maximum amount that can count as actual daily spend |
-| `allowed_categories` | Category allowlist |
-| `blocked_merchants` | Explicit merchant denylist |
-| `allowed_merchants` | Optional strict merchant allowlist |
-| `time_window` | Allowed local request hours |
-| `velocity` | Maximum number of attempts in a rolling time window |
-| `active` | Whether the policy version is active |
-| `version` | Monotonic policy version |
-
-An example policy configuration is:
-
-```text
-max_amount_per_txn = ₹2000
-max_daily_total    = ₹5000
-allowed_categories = ["grocery"]
-time_window        = 06:00–22:00
-velocity           = 3 attempts / 1440 minutes
-```
-
-The policy is data, not executable code. The decision engine reads the policy and applies deterministic checks.
-
----
-
-## 4. Decision outcomes
-
-### APPROVE
-
-The transaction passes the deterministic policy checks, or an escalated request is judged to be within the authorized goal.
-
-Only an `APPROVE` can proceed toward the Razorpay test-mode gateway.
-
-### HOLD
-
-Used for situations that should not be guessed through:
-
-- a velocity-only breach,
-- an unresolved ambiguous intent,
-- or another explicitly conservative case.
-
-A `HOLD` exposes human-review actions in the dashboard.
-
-### BLOCK
-
-A hard policy violation stops the transaction. Examples include:
-
-- amount cap exceeded,
-- daily cap exceeded,
-- unsupported category,
-- blocked merchant,
-- outside the allowed time window,
-- explicit intent/override language that violates the policy boundary,
-- or another hard rule failure.
-
----
-
-## 5. Behavioral risk layer
-
-Sentinel also contains a composite behavioral risk scorer. It combines multiple signals rather than depending on a single binary anomaly flag:
-
-```text
-amount deviation       0–40
- timing deviation      0–20
-merchant unfamiliarity  0–20
-category unfamiliarity 0–20
---------------------------------
-composite                0–100
-```
-
-The behavioral layer is downgrade-only in the current design: a suspicious behavioral pattern can reduce an `APPROVE` to `HOLD`, but it is not used as an independent mechanism to upgrade a transaction into `BLOCK`. Hard policy violations remain the deterministic authority boundary.
-
----
-
-## 6. Case-based reasoning (RAG without an external embedding service)
-
-When a transaction is escalated, the LLM reasoner retrieves similar past cases from the **same agent's own decision history** using TF-IDF retrieval.
-
-This was chosen because the corpus is small and structured:
-
-- no embedding API is required,
-- retrieval is deterministic,
-- retrieval is cheap,
-- the critical payment path does not gain another network dependency.
-
-The LLM receives the authorized goal, current intent, transaction context, and retrieved precedent. The system is conservative: unusable or failed LLM responses fail closed to `HOLD` rather than silently becoming `APPROVE`.
-
----
-
-## 7. Audit trail and data model
-
-Sentinel stores transaction requests and decisions separately.
-
-### `policies`
-
-Versioned policy documents per agent.
-
-### `transactions`
-
-Every transaction request observed by Sentinel, including its request ID, agent, merchant, category, amount, request timestamp, stated intent, original goal, scenario tag, and processing timestamp.
-
-### `decisions`
-
-The judgment attached to a request, including:
-
-- verdict,
-- human-readable reasons,
-- checked rules,
-- decision layer,
-- retrieved past-case references,
-- confidence,
-- model version when applicable,
-- payment-gateway status/reference,
-- human override for resolved `HOLD` cases,
-- decision timestamp.
-
-The database relationship is one-to-one through `request_id`.
-
----
-
-## 8. API surface
-
-Except for `/health`, the API is protected with `X-API-Key`.
-
-### Health
-
-```text
-GET /health
-```
-
-Returns service status, database status, queue status, and replica instance ID.
-
-### Policy
-
-```text
-POST /policies
-GET  /policies
-GET  /policies/{agent_id}
-```
-
-### Transactions
-
-```text
-GET  /transactions
-GET  /transactions/scenarios
-GET  /transactions/summary
-POST /transactions/evaluate
-POST /transactions/evaluate-batch
-```
-
-`GET /transactions` supports the live feed's pagination/search/filtering contract.
-
-### Async jobs
-
-```text
-GET /jobs
-GET /jobs/{job_id}
-GET /jobs/batch/{batch_id}
-```
-
-### Simulation
-
-```text
-POST /simulate
-POST /simulate-async
-```
-
-### Human review
-
-```text
-POST /holds/{request_id}/resolve
-```
-
-### Evaluation
-
-```text
-GET /eval/report
-```
-
-### AP2 adapter
-
-```text
-POST /ap2/evaluate-mandate
-```
-
-The adapter translates AP2-shaped mandate data into Sentinel's policy/request model. It does **not** perform production cryptographic signature verification; responses carry `signature_verified: false` so this limitation cannot be mistaken for authentication.
-
----
-
-## 9. Async architecture
-
-The synchronous path is useful for direct API calls and the seed/evaluation harness. The async path is used by the dashboard scenario runner.
-
-```text
-POST /simulate-async
-       |
-       +--> PurchasingAgent generates requests
-       |
-       +--> enqueue job payloads in Redis
-                    |
-             +------+------+
-             |             |
-          worker 1       worker 2 ...
-             |             |
-             +------+------+
-                    |
-             _process_single_evaluation
-                    |
-               orchestrator
-                    |
-             Postgres + audit
-                    |
-              job status update
-                    |
-             frontend polling
-```
-
-The current Docker deployment runs two backend replicas (`backend1`, `backend2`) behind nginx and shares Postgres and Redis.
-
----
-
-## 10. Docker deployment
-
-```text
-Browser
-  |
-  v
-nginx :8000
-  |
-  +--------------------+
-  |                    |
-backend1 :8000     backend2 :8000
-  |                    |
-  +---------+----------+
-            |
-       PostgreSQL
-            |
-          Redis
-```
-
-Docker Compose includes:
-
-- `postgres` — PostgreSQL 16
-- `redis` — Redis 7
-- `backend1` — first API replica
-- `backend2` — second API replica
-- `nginx` — round-robin front door on host port `8000`
-
-Replica identity is exposed by `/health` using `SENTINEL_INSTANCE_ID`.
-
----
-
-## 11. Frontend
-
-The frontend is a Vite/React application with Tailwind-based styling.
-
-Main UI areas:
-
-- **Live Feed** — transaction feed, search, verdict/scenario filters, expandable decision details.
-- **Policy** — create/update agent policies.
-- **Evaluation** — evaluation report, class metrics, confusion matrix, decision-layer metrics, error analysis.
-- **Agent selector** — switches the dashboard between isolated agents.
-- **Scenario Runner** — well-behaved/adversarial simulations, sync/async execution.
-- **Queue Monitor** — async job visibility.
-- **HITL controls** — resolve `HOLD` transactions.
-- 
-The dashboard is backed by the Sentinel API and supports live transaction, policy, evaluation, scenario, queue, and HITL workflows.
-
----
-
-## 12. Scenario coverage
-
-The built-in purchasing agent supports:
-
-```text
-well_behaved
-amount_creep
-category_drift
-velocity_spike
-off_hours
-prompt_injection
-merchant_swap
-```
-
-Scenario execution uses isolated agent histories so behavioral and transaction context does not leak between agents.
-
-The built-in scenarios exercise the payment trust boundary across normal behavior, policy violations, behavioral anomalies, adversarial instructions, and merchant restrictions.
----
-
-## 13. Evaluation
-
-Sentinel uses multiple evaluation layers because a single 100% score can be misleading.
-
-### Golden dataset
-
-Current verified run:
-
-```text
-89 cases
-100.0% overall accuracy
-APPROVE: precision 1.00 / recall 1.00 / F1 1.00 / n=23
-HOLD:    precision 1.00 / recall 1.00 / F1 1.00 / n=14
-BLOCK:   precision 1.00 / recall 1.00 / F1 1.00 / n=52
-rule_engine: 73/73
-llm_reasoner: 16/16
-misses: 0
-```
-
-
-### Evaluation progression
-
-Sentinel's evaluation results improved across successive validation iterations as implementation bugs, adversarial edge cases, and model-behavior edge cases were identified and addressed.
-
-| Evaluation | Earlier result | Intermediate result | Latest verified result |
-|---|---:|---:|---:|
-| Golden dataset | 91.0% | — | **100.0% (89/89)** |
-| Hard/adversarial Tier 2 | 87.5% | 93.8% | **100.0% (16/16)** |
-
-The progression reflects iterative engineering and regression testing rather than a claim of general real-world accuracy. The latest results are the current verified benchmark runs, while earlier values are retained to show the development trajectory.
-
-For the latest verified runs, the Golden dataset achieved **89/89** and the Hard Tier-2 dataset achieved **16/16** using the live OpenRouter reasoning provider.
-
-### Prevalence-weighted synthetic set
-
-The repository also contains a 500-case synthetic prevalence-weighted evaluation that scored 100% in its recorded report. Its class proportions are deliberately constructed rather than measured from production traffic.
-
-### Hard/adversarial Tier 2
-
-The current verified 16-case hard/adversarial Tier-2 run scored **100.0% (16/16)** using the live OpenRouter provider. The rule-engine portion was **11/11 (100%)** and the LLM-reasoner portion was **5/5 (100%)**, with **0 misses**.
-
-This tier is intentionally designed to expose non-trivial semantic and adversarial failure modes rather than to maximize a headline score. Live LLM results can vary between runs, so this result should be understood as the outcome of the current verified evaluation run, not a claim of general real-world LLM accuracy.
-
-### Fuzz testing
-
-187 generated adversarial variants were checked against explicit safety invariants with 0 invariant violations in the recorded report.
-
-### Load testing
-
-The archived load-test reports contain measured results and should be treated as historical run artifacts, not universal capacity guarantees. The observed difference between one-agent stress and many-agent spread is explained by the fact that history-dependent checks scale with the selected agent's accumulated history.
-
----
-
-## 14. Testing
-
-Current verified backend suite:
-
-```text
-113 passed
-222 warnings
-```
-
-The suite covers policy rules, orchestration, HITL, agent isolation, API contracts, adversarial scenarios, Redis backends, rate limiting, behavioral risk, RAG retrieval, chaos/failure modes, and AP2 translation.
-
-Warnings currently come from upstream/deprecation areas such as Starlette/FastAPI lifecycle APIs and SQLAlchemy's legacy UTC helper; they are cleanup items, not failing tests.
-
-Run:
+Hard restrictions use deterministic comparisons. An exact normalized restatement of the authorized goal is a fast path; added purpose or changed wording requires semantic review. Explicit override patterns block before calling a model. Missing live-model credentials use conservative, clearly labeled mock reasoning, never fabricated live results.
+
+## Main guarantees and boundaries
+
+- Separate admin, owner, reviewer, and agent credentials with agent/owner scopes.
+- Server-owned goals and processing time for submitted live API requests. Agents cannot edit policies or resolve holds.
+- HttpOnly, revocable browser sessions; credentials are not bundled into frontend assets.
+- A PostgreSQL advisory transaction lock serializes policy updates, evaluations, and review per agent, including first policy creation.
+- Exact integer-paise comparisons and numeric persisted amounts. Full-ledger SQL budget totals and velocity counts are independent of the bounded behavioral history.
+- Every approval commits a reservation and a payment outbox entry before external IO.
+- Atomic payment claims, stable request replay, and refusal to blindly retry unknown gateway outcomes.
+- Only an unresolved HOLD can be reviewed, once, with current hard-policy and allowance checks. Original verdict and reviewer event remain separate.
+- Payment reservations, created orders, mock orders, unknown outcomes, and captured payments are distinct. Created or unknown orders keep allowance reserved; order creation is not settlement.
+- PostgreSQL stores accepted jobs atomically. Renewable leases fence authorization and completion; delivery is **at least once**, protected by durable request IDs and payment claims. Redis Streams remain a development compatibility option.
+- Distributed quotas use Redis server time and an atomic sliding-window script. Redis mode never silently falls back to a private process queue.
+- AP2-shaped unsigned JSON cannot authorize payments: the HTTP adapter returns 501 until authenticated protocol support is implemented.
+- Live Razorpay keys are rejected. Only `rzp_test_` keys or explicit local mocks are supported.
+
+## Start the local demo
+
+Prerequisites: Docker/Compose, Python 3.12, and Node 22 for frontend development.
 
 ```bash
-cd backend
-source venv/bin/activate
-python -m pytest tests/ -v
-```
-
----
-
-## 15. Environment variables
-
-The important backend settings are:
-
-```env
-LLM_PROVIDER=openrouter
-LLM_MODEL=<configured model>
-OPENROUTER_API_KEY=<secret>
-
-SENTINEL_DATABASE_URL=...
-SENTINEL_API_KEY=...
-
-QUEUE_BACKEND=...
-CACHE_BACKEND=...
-REDIS_URL=...
-
-SENTINEL_INSTANCE_ID=...
-
-RAZORPAY_KEY_ID=
-RAZORPAY_KEY_SECRET=
-```
-
-Never commit real secrets. Keep `.env` files out of version control and use `.env.example` as a template.
-
----
-
-## 16. Reliable startup
-
-### Start Docker services
-
-```bash
+python3 scripts/setup_dev.py
 docker compose up -d --build
+docker compose exec backend1 python -m app.demo.reset_and_seed --confirm-reset
 ```
 
-Verify:
+Open **http://localhost:8000**. Sign in using the generated local-admin credential stored in `backend/.env`. Keep that file private. The setup script refuses to overwrite existing environment files.
 
-```bash
-curl -s -H "X-API-Key: dev-only-insecure-key-change-me" http://localhost:8000/health
-```
+The seed resets demo data and produces 18 transactions: 6 APPROVE, 2 HOLD, and 10 BLOCK. Reset is disabled in the production profile. Never run it against valuable data.
 
-The response should report:
+Compose runs PostgreSQL (including the authoritative job queue), Redis quotas, migrations, two non-root backend replicas, the built frontend, and a loopback-bound nginx gateway with dynamic upstream DNS. Database and Redis ports are not published. Backend containers have no development reload or source bind mount.
 
-```json
-{"status":"ok", "checks":{"database":"ok","queue":"redis"}}
-```
-
-### Start frontend
+For frontend development:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open:
+Vite proxies `/api` to the local backend. Never put an API key in `VITE_` variables. Only non-secret frontend configuration belongs there.
 
-```text
-http://localhost:5173/
-```
+The [developer quickstart](docs/DEVELOPER_QUICKSTART.md) runs an isolated payment flow through the HTTP API and shows what each decision does to the budget.
 
----
+## Access configuration
 
-## 17. Database reset and environment safety
+`SENTINEL_CREDENTIALS` is a server-side JSON array. Every entry needs a unique 32+ character key, unique subject, and role:
 
-A local Postgres.app instance can use port 5432 at the same time as Docker's PostgreSQL service. Running database initialization from the host can therefore target a different PostgreSQL process than the Docker-backed application.
+| Role | Scope and permissions |
+|---|---|
+| `admin` | Administration, evaluations, review, metrics, reconciliation |
+| `owner` | `owner_id`; manage own policies and submit/review own agents |
+| `reviewer` | `owner_id`; read and review that owner's agents |
+| `agent` | `agent_ids`; submit/read permitted agents; cannot manage policies or review |
 
-For the Docker deployment, run database reset and seed operations inside the backend container:
+Browser login exchanges a human credential for an eight-hour HttpOnly session. Cookie mutations require an allowlisted Origin and `X-Sentinel-CSRF: 1`. Rotating/removing the credential revokes its sessions. Service callers use `X-API-Key`.
+
+Compose uses shared database authority: the initialization job seeds the configured registry once, storing only key hashes. The Access tab supports audited create/rotate/revoke/scope operations. Restarting with old environment values never resurrects a revoked key. Production requires `SENTINEL_AUTH_BACKEND=database`. The configured-key fallback is development-only. The production profile requires PostgreSQL with its durable job queue, Redis quotas, scoped credentials, explicit HTTPS origins/hosts, an explicit live model, a strong webhook secret, current migrations, and Razorpay **test** credentials. Production also enforces restricted DB grants, PostgreSQL/Redis TLS and an operational alert destination. [The Kubernetes renderer](docs/DEPLOYMENT.md) provides pinned images, separate migration/runtime secrets, TLS Gateway API routing and redundant serving tiers; the base Compose gateway remains a local HTTP demo.
+
+## API overview
+
+| Area | Routes |
+|---|---|
+| Session | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout` |
+| Policies | `POST /policies`, `GET /policies`, `GET /policies/{agent_id}`, `GET /policies/{agent_id}/budget` |
+| Transactions | `POST /transactions/evaluate`, `POST /transactions/evaluate-batch`, feed/search/pagination/summary/scenarios |
+| Background work | `GET /jobs`, `GET /jobs/{job_id}`, `GET /jobs/batch/{batch_id}` |
+| Simulations | `POST /simulate`, `POST /simulate-async` (disabled in production profile) |
+| Review | `POST /holds/{request_id}/resolve` |
+| Provider | Signed `POST /payments/webhook`; admin reconciliation endpoints; scoped pending-only `POST /payments/{request_id}/cancel` |
+| Evidence | `GET /eval/report`, scoped `GET /feedback/cases`, admin `GET /metrics` |
+| Health | `GET /health` |
+
+With Compose, prefix API routes with `/api`. Reconciliation requires a known provider order ID; Sentinel fetches it and verifies request correlation, INR currency, and exact amount before updating state. Unknown outcomes remain reserved until reconciled. Captured-state webhooks require a valid HMAC signature and are deduplicated.
+
+## Test and evaluate
 
 ```bash
-docker compose exec backend1 python -m app.demo.reset_and_seed
+python3 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+REDIS_URL=redis://localhost:6379/0 .venv/bin/python -m pytest backend/tests -q --timeout=45
+cd frontend
+npm ci
+npm test
+npm run lint
+npm run build
 ```
 
-This ensures the seed operation uses the Docker PostgreSQL service configured for the application.
+Tests default to a disposable SQLite database. Set `SENTINEL_TEST_DATABASE_URL` to a dedicated PostgreSQL database whose name ends in `_test` to exercise cross-connection PostgreSQL locking. Tests never use the application's configured database or provider keys. Redis tests use isolated namespaces.
 
-Afterward verify:
+The [November 17 implementation run](https://github.com/TheMS1314/sentinel/actions/runs/44141841334) passed 320 backend tests, 19 frontend tests, 39 Compose checks, 11 Gateway API/TLS checks and 22 application checks in Kubernetes. The application checks cover verified PostgreSQL and Redis TLS, rejection of plaintext and untrusted certificates, and ledger persistence after replacing the PostgreSQL pod on the same volume. Kind uses mock model and payment providers. See the [implementation audit](docs/IMPLEMENTATION_AUDIT.md) and [branch CI](https://github.com/TheMS1314/sentinel/actions?query=branch%3Acodex%2Fsentinel-hardening) for current results.
 
 ```bash
-docker compose exec postgres psql -U sentinel -d sentinel -c "SELECT COUNT(*) AS transactions FROM transactions; SELECT verdict, COUNT(*) FROM decisions GROUP BY verdict ORDER BY verdict;"
+PYTHONPATH=backend .venv/bin/python -m app.eval.eval_harness
+PYTHONPATH=backend .venv/bin/python -m app.eval.eval_harness backend/data/hard_dataset.json
+PYTHONPATH=backend .venv/bin/python -m app.eval.eval_harness backend/data/prevalence_dataset.json
+PYTHONPATH=backend .venv/bin/python -m app.fuzz.run
+PYTHONPATH=backend .venv/bin/python -m app.loadtest.run --requests 100 --workers 4 --agents 10
 ```
 
-Expected clean database state:
+Evaluation, fuzzing, and the pipeline benchmark run in separate processes against disposable databases and mock payment gateways. Model runtime/mode and dataset fingerprint are recorded. To require an actual model, configure its key/model and set `SENTINEL_EVAL_REQUIRE_LIVE=1`. To compare retrieval, repeat the same evaluation with `SENTINEL_DISABLE_RETRIEVAL=1` and archive both outputs. The project does not claim retrieval benefit without such evidence.
 
-```text
-18 transactions
-APPROVE 6
-BLOCK   10
-HOLD     2
+Current refreshed offline reports: golden **89/89**, synthetic prevalence **500/500**, hard **14/16** with conservative mock reasoning, fuzz **187 cases / zero selected invariant violations**. The two hard-set misses are conservative holds where constructed labels expected approval. These are not real-world fraud-detection rates or live-model quality measurements.
+
+Behavioral weights and the distribution-monitor threshold remain uncalibrated heuristics. Monitor alerts never change authorization. [Feedback curation and time-split experiments](docs/FEEDBACK_EVALUATION.md) require independent labels and recorded ledger history; they never automatically retrain or expand authority.
+
+## Risk intelligence extension
+
+The administrator dashboard now includes **Risk intelligence**: expiring local threat indicators, owner-scoped merchant cyber-risk profiles, descriptive multi-agent merchant correlation, and a separate emergency dispatch guard with a freeze and exact rolling count/amount limits. Intelligence can restrict a decision; it cannot expand owner policy authority. Current confirmed threats are checked again before dispatch.
+
+Recorded Future/RiskRecon now have bounded, schema-validated read-only adapters with versioned bindings and stale-evidence dispatch checks; their **licensed live verification has not run**. Mastercard Decision Intelligence/Safety Net are not connected; Sentinel supplies its own local signals and emergency guard. Local records are labeled operator or synthetic evidence; unknown identity and absent local matches are not safe ratings. The dispatch guard runs inside Sentinel, not on a payment network. See the [design, controls, API and integration path](docs/RISK_INTELLIGENCE.md).
+
+Run migrations before using these controls on an existing database. Paused payments retain their reservations and can resume while their five-minute default approval is valid. Pending-only cancellation and expiration release undispatched reservations; unknown outcomes require reconciliation. Review pending work before unfreezing.
+
+## Existing installations
+
+Back up the database, then run Alembic migrations using the configured backend database:
+
+```bash
+docker compose run --rm db-init
 ```
 
----
+Migration preserves transaction and decision history, adds provenance/review/payment/session records, conservatively reserves historical approvals as unknown, and disables legacy policies without an explicitly configured authorized goal. Owners must re-save those policies. Duplicate historical version numbers require explicit operator resolution; migration refuses to guess. Existing model/provider results are historical evidence, not automatically reverified results.
 
-## 18. Security posture
+## Limits
 
-Current controls include:
+Production requests require an owner-scoped registered merchant ID; its name, category and domain come from the server directory and are version-bound to dispatch. These are operator-attested identities, not acquirer-verified settlement recipients. Legacy development requests may still assert merchant strings. The project does not implement real customer charging. AP2 cryptographic verification is unsupported and cannot authorize an order. Provider test credentials and live LLM keys are needed to verify those external integrations. Database administrators remain trusted; these records are not a cryptographically immutable audit system. Redis AOF `everysec` can lose recent writes on a host crash, and shared dependencies remain single points of failure in this local topology.
 
-- API-key protection on all non-health routes.
-- Sliding-window rate limiting per API key.
-- Consistent JSON error envelopes.
-- Durable audit writes that fail loudly if the database cannot record a decision.
-- Explicit AP2 `signature_verified: false` disclosure.
-- Gitignored environment files and no committed secrets.
-- Conservative LLM failure behavior: errors resolve to `HOLD`, never a guessed `APPROVE`.
-
-### Known security/production gaps
-
-These are intentional disclosures, not hidden claims:
-
-1. AP2 cryptographic signature verification is not implemented.
-2. Rate limiting is per-instance rather than distributed across replicas.
-3. The human-feedback loop is not automatically feeding overrides back into evaluation data.
-4. Prompt versioning, cost/token tracking, canarying, and automated drift detection are not complete.
-5. Razorpay use in this project is test-mode/mock depending on configuration; no claim of real customer charging is made.
-
----
-
-## 19. Important engineering findings
-
-The project was hardened through multiple real failures rather than only happy-path testing. High-value examples include:
-
-- blocked attempts were incorrectly counted as spent money;
-- a transaction counted itself in its own history;
-- a shared word weakened prompt-injection detection;
-- concurrent policy versioning could create multiple active versions with the same version number;
-- RAG retrieval crashed only once enough history existed to make retrieval non-empty;
-- byte-exact merchant matching let trivial case/whitespace variants bypass a blocklist;
-- LLM, Redis cache, and Redis worker failure paths were not initially fail-soft;
-- `scikit-learn` was missing from the declared runtime dependencies;
-- golden evaluation rows leaked into the live feed;
-- an amount-creep generator sometimes produced a non-violating amount;
-- frontend transaction-count limits were cosmetic until server validation was added;
-- multi-agent capability existed in the backend but was initially missing from the dashboard;
-- requested time and processing/created time were conflated in the UI;
-- the test harness could restart the singleton queue across different event loops;
-- Redis queue unit tests collided with production queue data until their queue key was isolated;
-- the local demo seed could target Postgres.app instead of Docker PostgreSQL when both were listening on port 5432.
-
-These findings are part of the system's engineering evidence. They should be discussed as bugs/findings with root causes and regression coverage, not as generic "we tested it" language.
-
----
-
-## 20. What Sentinel does not claim
-
-Sentinel does **not** claim:
-
-- 100% real-world fraud detection,
-- production-ready AP2 authentication,
-- real customer payment charging,
-- distributed rate limiting,
-- measured production traffic prevalence,
-- or general LLM reasoning accuracy outside the evaluated datasets.
-
-The strongest defensible framing is:
-
-> **Sentinel is a tested, explainable agent-payment trust layer with deterministic policy enforcement, conservative LLM escalation, human review, auditability, adversarial scenarios, and a verified multi-replica Docker deployment — with clearly disclosed production gaps.**
-
----
+More detail: [architecture](docs/ARCHITECTURE.md), [production engineering and operations](docs/PRODUCTION_READINESS.md), [gap-by-gap changes and verification](docs/HARDENING_REPORT.md).
 
 
----
+## Gap closure and release status
 
-## 21. Repository map
+[The remaining gap register](docs/GAP_REGISTER.md) separates implemented software from external proof. The dashboard now includes Access, Merchants, Operations and Providers, in addition to policy/review/risk controls. Use [incident operations](docs/OPERATIONS.md), [deployment configuration](docs/DEPLOYMENT.md), [commercial adapter contracts](docs/PROVIDER_CONNECTIONS.md), [opt-in integration verification](docs/INTEGRATION_VERIFICATION.md) and [independent feedback evaluation](docs/FEEDBACK_EVALUATION.md) for the current implementation. Main remains unmerged; no live-money or production launch claim is made.
 
-```text
-backend/
-  app/
-    agents/       LangGraph purchasing-agent simulator
-    api/          FastAPI routes and request processing
-    core/         policy evaluation, risk, LLM, queues, cache, auth, AP2
-    demo/         deterministic reset/seed runner
-    eval/         golden, prevalence, and hard evaluation assets
-    loadtest/     measured async throughput tests
-    fuzz/         adversarial property/invariant tests
-    models/       SQLAlchemy + policy/domain models
-    rag/          TF-IDF case retrieval
-  tests/          backend regression and contract tests
-  data/           evaluation and load/fuzz reports
-frontend/
-  src/
-    components/   dashboard UI components
-    api.js        authenticated API client
-README.md
-  project overview, runbook, evaluation, limitations
 
-docs/ARCHITECTURE.md
-  detailed system architecture and engineering evidence
-```
+Provider refresh can now be explicitly scheduled with durable leases, crash recovery and response fencing. Mapping review is bound to merchant identity versions; an identity edit cannot silently reattest its old provider mapping. Scheduling is disabled by default and requires both deployment and per-binding opt-in. Evaluation/contract reports are saved atomically with private permissions from creation. See [provider controls](docs/PROVIDER_CONNECTIONS.md).
+
+The Kubernetes bundle now references a platform-managed GatewayClass and emits Gateway API v1 routing resources, with HTTP-to-HTTPS redirect, same-namespace route attachment and explicit TLS Secret references. Install a maintained compatible controller before rollout; the former community ingress-nginx dependency is removed. [Deployment and cutover instructions](docs/DEPLOYMENT.md).

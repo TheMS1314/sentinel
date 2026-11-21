@@ -1,0 +1,14 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+sqlalchemy>=2.0.35,<2.1
+psycopg2-binary>=2.9.9,<3
+pydantic>=2.9.2,<3
+python-dotenv>=1.2.2,<2
+anthropic>=0.34.2,<1
+openai>=1.51,<3
+razorpay>=1.4.2,<3
+redis>=5.0.8,<8
+httpx>=0.27.2,<1
+numpy>=1.26.4,<3
+scikit-learn>=1.5.2,<2
+alembic>=1.14.1,<2

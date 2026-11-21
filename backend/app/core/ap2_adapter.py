@@ -50,7 +50,9 @@ class MandateTranslationResult:
     warnings: list = field(default_factory=list)
 
 
-def intent_mandate_to_policy(intent_mandate: dict, agent_id: str, owner_human_id: str) -> AgentPolicy:
+def intent_mandate_to_policy(
+    intent_mandate: dict, agent_id: str, owner_human_id: str
+) -> AgentPolicy:
     """
     Translates an AP2-shaped Intent Mandate into a Sentinel AgentPolicy.
 
@@ -89,7 +91,9 @@ def intent_mandate_to_policy(intent_mandate: dict, agent_id: str, owner_human_id
     )
 
 
-def cart_mandate_to_request(cart_mandate: dict, agent_id: str, raw_agent_goal: str) -> TransactionRequest:
+def cart_mandate_to_request(
+    cart_mandate: dict, agent_id: str, raw_agent_goal: str
+) -> TransactionRequest:
     """
     Translates an AP2-shaped Cart Mandate into a Sentinel TransactionRequest.
 

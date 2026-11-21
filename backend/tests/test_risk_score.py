@@ -2,8 +2,10 @@
 Tests for the composite risk scorer.
 Run with: pytest backend/tests/test_risk_score.py -v
 """
+
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
@@ -13,9 +15,14 @@ from app.core.risk_score import RiskScorer, FLAG_THRESHOLD
 
 def make_request(**overrides) -> TransactionRequest:
     defaults = dict(
-        request_id="req_1", agent_id="agent_1", merchant_name="FreshMart",
-        merchant_category="grocery", amount=300.0, requested_at_hour=14,
-        requested_at_iso="2026-08-24T14:00:00", stated_intent="buy groceries",
+        request_id="req_1",
+        agent_id="agent_1",
+        merchant_name="FreshMart",
+        merchant_category="grocery",
+        amount=300.0,
+        requested_at_hour=14,
+        requested_at_iso="2026-08-24T14:00:00",
+        stated_intent="buy groceries",
         raw_agent_goal="buy groceries",
     )
     defaults.update(overrides)
@@ -29,8 +36,13 @@ def make_approved_history(amounts, hours=None, merchants=None, categories=None):
     categories = categories or ["grocery"] * n
     return [
         HistoryItem(
-            request=make_request(request_id=f"h{i}", amount=a, requested_at_hour=h,
-                                  merchant_name=m, merchant_category=c),
+            request=make_request(
+                request_id=f"h{i}",
+                amount=a,
+                requested_at_hour=h,
+                merchant_name=m,
+                merchant_category=c,
+            ),
             verdict=VERDICT_APPROVE,
         )
         for i, (a, h, m, c) in enumerate(zip(amounts, hours, merchants, categories))
@@ -78,7 +90,9 @@ class TestCombinedWeakSignals:
             merchant_category="grocery",
         )
         score = scorer.evaluate(history, mild_request)
-        merchant_component = next(c for c in score.components if c.name == "merchant_familiarity")
+        merchant_component = next(
+            c for c in score.components if c.name == "merchant_familiarity"
+        )
         assert merchant_component.points == 20.0
         assert score.total >= FLAG_THRESHOLD
         assert score.is_high_risk is True
@@ -89,7 +103,9 @@ class TestCombinedWeakSignals:
             [200.0, 210.0, 190.0, 205.0, 195.0, 200.0],
             hours=[14] * 6,
         )
-        request = make_request(amount=200.0, requested_at_hour=14, merchant_name="NewMart")
+        request = make_request(
+            amount=200.0, requested_at_hour=14, merchant_name="NewMart"
+        )
         score = scorer.evaluate(history, request)
         assert score.total == 20.0
         assert score.is_high_risk is False
@@ -106,7 +122,9 @@ class TestFormatReason:
     def test_high_risk_message_lists_driving_components(self):
         scorer = RiskScorer()
         history = make_approved_history([200.0] * 6, hours=[14] * 6)
-        score = scorer.evaluate(history, make_request(amount=1900.0, merchant_name="NewMart"))
+        score = scorer.evaluate(
+            history, make_request(amount=1900.0, merchant_name="NewMart")
+        )
         msg = RiskScorer.format_reason(score)
         assert "amount_deviation" in msg or "merchant_familiarity" in msg
         assert str(int(score.total)) in msg

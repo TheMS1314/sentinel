@@ -33,7 +33,13 @@ class RedisCache:
         url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
         if redis_lib is None:
             raise RuntimeError("redis package not installed -- pip install redis")
-        self._client = redis_lib.Redis.from_url(url, decode_responses=True)
+        self._client = redis_lib.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            max_connections=16,
+        )
 
     def _k(self, key: str) -> str:
         return f"{self.key_prefix}{key}"
@@ -42,14 +48,17 @@ class RedisCache:
         try:
             raw = self._client.get(self._k(key))
         except Exception as e:
-            logger.warning(f"Redis GET failed for {key} ({e}); treating as a cache miss.")
+            logger.warning(
+                "Redis GET unavailable (%s); treating as a cache miss.",
+                type(e).__name__,
+            )
             return None
         if raw is None:
             return None
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning(f"Corrupt cache value for key {key}, dropping it.")
+            logger.warning("Corrupt cache value; dropping it.")
             try:
                 self._client.delete(self._k(key))
             except Exception:
@@ -63,37 +72,56 @@ class RedisCache:
             # Caching is an optimization, never a correctness requirement --
             # a failed cache write must not fail the request that triggered
             # it. The next read will just be a cache miss and recompute.
-            logger.warning(f"Redis SET failed for {key} ({e}); continuing without caching this value.")
+            logger.warning(
+                "Redis SET unavailable (%s); continuing without cache.",
+                type(e).__name__,
+            )
 
     def invalidate(self, key: str):
         try:
             self._client.delete(self._k(key))
         except Exception as e:
-            logger.warning(f"Redis DELETE failed for {key} ({e}); a stale value may be served until its TTL expires.")
+            logger.warning(
+                "Redis DELETE unavailable (%s); value expires by TTL.", type(e).__name__
+            )
 
     def invalidate_prefix(self, prefix: str):
         try:
             pattern = f"{self.key_prefix}{prefix}*"
             cursor = 0
-            while True:
-                cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=100)
+            for _ in range(100):
+                cursor, keys = self._client.scan(
+                    cursor=cursor, match=pattern, count=100
+                )
                 if keys:
                     self._client.delete(*keys)
                 if cursor == 0:
                     break
+            else:
+                logger.warning(
+                    "Redis cache invalidation scan bound reached; remaining entries expire by TTL"
+                )
         except Exception as e:
-            logger.warning(f"Redis prefix invalidation failed for {prefix} ({e}); stale values may be served until TTL expiry.")
+            logger.warning(
+                "Redis cache invalidation unavailable (%s); remaining entries expire by TTL.",
+                type(e).__name__,
+            )
 
     def stats(self) -> dict:
         pattern = f"{self.key_prefix}*"
         cursor = 0
         count = 0
-        while True:
+        for _ in range(100):
             cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=100)
             count += len(keys)
             if cursor == 0:
                 break
-        return {"total_entries": count, "live_entries": count, "backend": "redis"}
+        return {
+            "total_entries": count,
+            "live_entries": count,
+            "backend": "redis",
+            "truncated": cursor != 0,
+        }
 
 
 def make_cache(ttl_seconds: float, key_prefix: str):
@@ -111,5 +139,8 @@ def make_cache(ttl_seconds: float, key_prefix: str):
             logger.info(f"Using Redis cache backend for {key_prefix}")
             return cache
         except Exception as e:
-            logger.warning(f"CACHE_BACKEND=redis but Redis unavailable ({e}); falling back to in-memory cache.")
+            logger.warning(
+                "Redis cache unavailable (%s); using bounded memory cache.",
+                type(e).__name__,
+            )
     return TTLCache(ttl_seconds=ttl_seconds)

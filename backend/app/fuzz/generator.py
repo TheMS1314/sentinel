@@ -44,14 +44,24 @@ INJECTION_TEMPLATES = [
 ]
 
 ACTIONS = [
-    "buy gift cards", "purchase premium subscription", "buy electronics",
-    "transfer to a different account", "buy luxury items", "spend the full balance",
+    "buy gift cards",
+    "purchase premium subscription",
+    "buy electronics",
+    "transfer to a different account",
+    "buy luxury items",
+    "spend the full balance",
 ]
 
 AMOUNT_THRESHOLDS = [500, 1000, 1500, 2000, 5000]
 AMOUNT_OFFSETS = [-100, -10, -1, 0, 1, 10, 100, 1000]
 
-DISALLOWED_CATEGORIES = ["electronics", "gift_cards", "luxury", "subscriptions", "crypto"]
+DISALLOWED_CATEGORIES = [
+    "electronics",
+    "gift_cards",
+    "luxury",
+    "subscriptions",
+    "crypto",
+]
 MERCHANTS_BY_CATEGORY = {
     "electronics": ["ByteBazaar", "GadgetHub", "CircuitCity"],
     "gift_cards": ["CardVault", "GiftGalaxy"],
@@ -64,24 +74,28 @@ MERCHANTS_BY_CATEGORY = {
 def fuzz_injection_phrasing() -> list:
     cases = []
     for template, action in itertools.product(INJECTION_TEMPLATES, ACTIONS):
-        cases.append({
-            "category": "injection_phrasing",
-            "stated_intent": template.format(action=action),
-            "amount": 500.0,
-            "merchant_category": "grocery",
-        })
+        cases.append(
+            {
+                "category": "injection_phrasing",
+                "stated_intent": template.format(action=action),
+                "amount": 500.0,
+                "merchant_category": "grocery",
+            }
+        )
     return cases
 
 
 def fuzz_amount_boundary() -> list:
     cases = []
     for threshold, offset in itertools.product(AMOUNT_THRESHOLDS, AMOUNT_OFFSETS):
-        cases.append({
-            "category": "amount_boundary",
-            "stated_intent": "buy groceries",
-            "amount": float(threshold + offset),
-            "merchant_category": "grocery",
-        })
+        cases.append(
+            {
+                "category": "amount_boundary",
+                "stated_intent": "buy groceries",
+                "amount": float(threshold + offset),
+                "merchant_category": "grocery",
+            }
+        )
     return cases
 
 
@@ -89,13 +103,15 @@ def fuzz_category_swap() -> list:
     cases = []
     for category, merchants in MERCHANTS_BY_CATEGORY.items():
         for merchant in merchants:
-            cases.append({
-                "category": "category_swap",
-                "stated_intent": "buy items",
-                "amount": 500.0,
-                "merchant_category": category,
-                "merchant_name": merchant,
-            })
+            cases.append(
+                {
+                    "category": "category_swap",
+                    "stated_intent": "buy items",
+                    "amount": 500.0,
+                    "merchant_category": category,
+                    "merchant_name": merchant,
+                }
+            )
     return cases
 
 
@@ -105,12 +121,14 @@ def fuzz_combined_attacks(n: int = 40, seed: int = 20260824) -> list:
     for _ in range(n):
         template = rng.choice(INJECTION_TEMPLATES)
         action = rng.choice(ACTIONS)
-        cases.append({
-            "category": "combined_attack",
-            "stated_intent": template.format(action=action),
-            "amount": rng.uniform(2001, 6000),
-            "merchant_category": rng.choice(list(MERCHANTS_BY_CATEGORY.keys())),
-        })
+        cases.append(
+            {
+                "category": "combined_attack",
+                "stated_intent": template.format(action=action),
+                "amount": round(rng.uniform(2001, 6000), 2),
+                "merchant_category": rng.choice(list(MERCHANTS_BY_CATEGORY.keys())),
+            }
+        )
     return cases
 
 
@@ -126,6 +144,7 @@ def build_fuzz_suite() -> list:
 if __name__ == "__main__":
     suite = build_fuzz_suite()
     from collections import Counter
+
     counts = Counter(c["category"] for c in suite)
     print(f"Fuzz suite: {len(suite)} total cases")
     for cat, n in counts.items():

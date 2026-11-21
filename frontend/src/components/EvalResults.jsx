@@ -32,7 +32,7 @@ export default function EvalResults({ report }) {
     );
   }
 
-  const hasLiveKey = report.llm_provider && report.llm_provider !== "mock";
+  const hasLiveKey = report.runtime?.llm_mode === "live";
 
   return (
     <div className="flex flex-col gap-5">
@@ -45,7 +45,7 @@ export default function EvalResults({ report }) {
             })}
           </span>
           <span className={`px-2 py-0.5 rounded-full border ${hasLiveKey ? "text-approve border-approve/30 bg-approve/[0.06]" : "text-textfaint border-border"}`}>
-            {hasLiveKey ? `Live model (${report.llm_provider})` : "Mock LLM mode"}
+            {hasLiveKey ? `Live model (${report.llm_provider})` : (report.runtime?.llm_mode === "mock" ? "Mock LLM mode" : "Historical run · mode unverified")}
           </span>
         </div>
       )}
@@ -56,36 +56,10 @@ export default function EvalResults({ report }) {
         </div>
       </Card>
 
-      {report.hard_tier2 && (
-        <Card icon={Target} title="Benchmark progression" right={<span className="text-[11px] text-textfaint font-mono">Latest live runs</span>}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="bg-surface2/70 border border-border/60 rounded-lg p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-textfaint font-mono uppercase tracking-wide">Golden · 89 cases</span>
-                <span className="text-[11px] text-approve font-mono">Live OpenRouter</span>
-              </div>
-              <div className="text-[26px] font-mono font-bold text-text tabular-nums tracking-tight">
-                91% <span className="text-textfaint">→</span> <span className="text-approve">100%</span>
-              </div>
-              <div className="text-[11px] text-textfaint font-mono mt-1">Latest: {report.overall_accuracy * 100}% · 89/89 correct</div>
-            </div>
-            <div className="bg-surface2/70 border border-border/60 rounded-lg p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-textfaint font-mono uppercase tracking-wide">Hard Tier-2 · 16 cases</span>
-                <span className="text-[11px] text-approve font-mono">Latest: OpenRouter</span>
-              </div>
-              <div className="text-[26px] font-mono font-bold text-text tabular-nums tracking-tight">
-                87.5% <span className="text-textfaint">→</span> 93.8% <span className="text-textfaint">→</span> <span className="text-approve">100%</span>
-              </div>
-              <div className="text-[10px] text-textfaint font-mono mt-1.5">(87.5% historical/mock · 93.8% prior live · 100% latest live)</div>
-              <div className="text-[11px] text-textfaint font-mono mt-1">Latest: {(report.hard_tier2.overall_accuracy * 100).toFixed(1)}% · {Math.round(report.hard_tier2.overall_accuracy * report.hard_tier2.total_cases)}/{report.hard_tier2.total_cases} correct</div>
-            </div>
-          </div>
-          <p className="text-[12px] text-textfaint mt-4 leading-relaxed">
-            Benchmark results improved across evaluation iterations. Latest runs reach 100% on both current datasets; live LLM results can vary between runs.
-          </p>
-        </Card>
-      )}
+      {report.hard_tier2 && <Card icon={Target} title="Hard dataset result">
+        <p className="font-mono">{(report.hard_tier2.overall_accuracy * 100).toFixed(1)}% on {report.hard_tier2.total_cases} cases</p>
+        <p className="text-sm text-textmuted">Constructed benchmark; results describe this run.</p>
+      </Card>}
 
       <Card icon={Grid3x3} title="Per-class metrics">
         <div className="overflow-x-auto"><table className="w-full text-[13px] font-mono">

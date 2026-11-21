@@ -1,243 +1,264 @@
-"""
-Redis-Backed Evaluation Queue
-===============================
-A Redis-backed implementation of the same public interface as
-EvaluationQueue (job_queue.py): enqueue / get_job / stats, plus a
-worker loop. This is what makes the async queue genuinely usable
-across MULTIPLE backend replicas, not just multiple workers within
-one process -- job_queue.py's own docstring named this as the natural
-next step once real multi-instance scale exists.
+"""Bounded Redis Streams queue with pending-entry recovery and lease renewal.
 
-Design:
-  - Pending jobs live in a Redis LIST (`sentinel:queue:pending`).
-    Workers atomically pop from it with BRPOP, which blocks efficiently
-    (no busy-polling) and guarantees a job is only ever claimed by one
-    worker, even across different backend processes/replicas.
-  - Job status/result lives in a Redis HASH per job
-    (`sentinel:job:<job_id>`), so any replica's API process can look up
-    a job's status regardless of which replica's worker actually
-    processed it -- this is the actual problem an in-process dict
-    can't solve once there's more than one backend instance.
-  - Workers run as asyncio tasks calling the BLOCKING redis client via
-    asyncio.to_thread, since redis-py's sync client doesn't have a
-    non-blocking BRPOP; this keeps the FastAPI event loop unblocked
-    while still getting genuine blocking pop semantics.
+Delivery is at least once. Stable request IDs and the durable payment outbox make
+redelivery safe. Completed results expire; pending jobs and batches do not.
 """
 
-from __future__ import annotations
 import asyncio
 import json
-import uuid
 import logging
+import os
+import uuid
+import redis as redis_lib
 
 logger = logging.getLogger("sentinel.redis_queue")
-
-try:
-    import redis as redis_lib
-except ImportError:
-    redis_lib = None
-
-QUEUE_KEY = "sentinel:queue:pending"
-JOB_KEY_PREFIX = "sentinel:job:"
-BATCH_KEY_PREFIX = "sentinel:batch:"
-JOB_TTL_SECONDS = 3600  # completed job records expire after an hour
+QUEUE_KEY = "sentinel:queue:v2"
+JOB_TTL_SECONDS = 3600
 
 
 class RedisEvaluationQueue:
     def __init__(
         self,
         submit_fn,
-        num_workers: int = 4,
-        redis_url: str = "redis://localhost:6379/0",
-        queue_key: str = QUEUE_KEY,
+        num_workers=4,
+        redis_url="redis://localhost:6379/0",
+        queue_key=QUEUE_KEY,
+        max_queue_size=500,
+        lease_ms=60000,
     ):
-        if redis_lib is None:
-            raise RuntimeError("redis package not installed -- pip install redis")
-        self._client = redis_lib.Redis.from_url(redis_url, decode_responses=True)
-        self._submit_fn = submit_fn
-        self._num_workers = num_workers
-        self._workers: list = []
-        self._stop_flag = False
-        self._queue_key = queue_key
+        self._client = redis_lib.Redis.from_url(
+            redis_url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5
+        )
+        self._submit_fn, self._num_workers = submit_fn, num_workers
+        self._queue_key, self._group = queue_key, "evaluators"
+        self._prefix = queue_key + ":"
+        self._workers = []
+        self._lease_ms, self._capacity = lease_ms, max_queue_size
+        self._consumer = uuid.uuid4().hex
+
+    def _jobkey(self, jid):
+        return self._prefix + "job:" + jid
+
+    def _batchkey(self, bid):
+        return self._prefix + "batch:" + bid
 
     async def start(self):
-        self._client.ping()  # fail fast and loud if Redis isn't actually reachable
-        self._stop_flag = False
+        await asyncio.to_thread(self._client.ping)
+        try:
+            self._client.xgroup_create(
+                self._queue_key, self._group, id="0", mkstream=True
+            )
+        except redis_lib.ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):
+                raise
         self._workers = [
-            asyncio.create_task(self._worker_loop(i))
-            for i in range(self._num_workers)
+            asyncio.create_task(self._worker_loop(i)) for i in range(self._num_workers)
         ]
-        logger.info(
-            f"RedisEvaluationQueue started with "
-            f"{self._num_workers} workers against {self._queue_key}."
-        )
 
     async def stop(self):
-        self._stop_flag = True
-        for w in self._workers:
-            w.cancel()
+        for task in self._workers:
+            task.cancel()
+        await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers = []
 
-    async def enqueue(self, payload: dict, batch_id: str | None = None) -> str:
-        job_id = f"job_{uuid.uuid4().hex[:10]}"
-        job_key = f"{JOB_KEY_PREFIX}{job_id}"
-
-        def _do_enqueue():
-            self._client.hset(
-                job_key,
-                mapping={"status": "QUEUED", "result": "", "error": ""},
+    async def enqueue_batch(self, payloads, batch_id=None):
+        if not 1 <= len(payloads) <= 100:
+            raise ValueError("batch size must be 1..100")
+        jobs = []
+        for payload in payloads:
+            payload = dict(payload)
+            payload.setdefault("request_id", "req_" + uuid.uuid4().hex)
+            jobs.append(
+                {
+                    "job_id": "job_" + uuid.uuid4().hex,
+                    "payload": payload,
+                    "batch_id": batch_id,
+                }
             )
-            self._client.expire(job_key, JOB_TTL_SECONDS)
-            self._client.lpush(
-                self._queue_key,
-                json.dumps({"job_id": job_id, "payload": payload}),
-            )
-            if batch_id:
-                batch_key = f"{BATCH_KEY_PREFIX}{batch_id}"
-                self._client.rpush(batch_key, job_id)
-                self._client.expire(batch_key, JOB_TTL_SECONDS)
+        # Capacity check and all writes in one atomic script, including batch membership.
+        script = """
+        local jobs = cjson.decode(ARGV[1])
+        if redis.call('XLEN', KEYS[1]) + #jobs > tonumber(ARGV[2]) then return 0 end
+        for _,job in ipairs(jobs) do
+          local jk = ARGV[3] .. 'job:' .. job.job_id
+          redis.call('HSET', jk, 'status', 'QUEUED', 'result', '', 'error', '',
+            'submitted_by', job.payload._submitted_by or '', 'agent_id', job.payload.agent_id or '', 'attempts', '0')
+          redis.call('XADD', KEYS[1], '*', 'envelope', cjson.encode(job))
+          if ARGV[4] ~= '' then redis.call('RPUSH', ARGV[3] .. 'batch:' .. ARGV[4], job.job_id) end
+        end
+        return 1
+        """
+        ok = await asyncio.to_thread(
+            self._client.eval,
+            script,
+            1,
+            self._queue_key,
+            json.dumps(jobs),
+            self._capacity,
+            self._prefix,
+            batch_id or "",
+        )
+        if not ok:
+            raise ValueError("Queue capacity exceeded; retry later")
+        return [j["job_id"] for j in jobs]
 
-        await asyncio.to_thread(_do_enqueue)
-        return job_id
+    async def enqueue(self, payload, batch_id=None):
+        return (await self.enqueue_batch([payload], batch_id))[0]
 
-    def get_job(self, job_id: str):
-        job_key = f"{JOB_KEY_PREFIX}{job_id}"
-        data = self._client.hgetall(job_key)
+    def get_job(self, job_id):
+        data = self._client.hgetall(self._jobkey(job_id))
         if not data:
             return None
-        result = json.loads(data["result"]) if data.get("result") else None
         return {
             "job_id": job_id,
-            "status": data.get("status", "UNKNOWN"),
-            "result": result,
+            "status": data["status"],
+            "result": json.loads(data["result"]) if data.get("result") else None,
             "error": data.get("error") or None,
+            "submitted_by": data.get("submitted_by", ""),
+            "agent_id": data.get("agent_id", ""),
         }
 
-    def get_batch(self, batch_id: str) -> dict | None:
-        batch_key = f"{BATCH_KEY_PREFIX}{batch_id}"
-        job_ids = self._client.lrange(batch_key, 0, -1)
-        if not job_ids:
+    def get_batch(self, batch_id):
+        ids = self._client.lrange(self._batchkey(batch_id), 0, -1)
+        if not ids:
             return None
-        by_status = {"QUEUED": 0, "PROCESSING": 0, "DONE": 0, "FAILED": 0}
-        jobs = []
-        for jid in job_ids:
-            job = self.get_job(jid)
-            status = job["status"] if job else "UNKNOWN"
-            by_status[status] = by_status.get(status, 0) + 1
-            jobs.append({
+        jobs = [
+            self.get_job(jid)
+            or {
                 "job_id": jid,
-                "status": status,
-                "result": job["result"] if job else None,
-                "error": job["error"] if job else None,
-            })
-        done = by_status.get("DONE", 0) + by_status.get("FAILED", 0)
+                "status": "EXPIRED",
+                "result": None,
+                "error": "Result expired",
+            }
+            for jid in ids
+        ]
+        counts = {
+            key: 0 for key in ("QUEUED", "PROCESSING", "DONE", "FAILED", "EXPIRED")
+        }
+        for job in jobs:
+            counts[job["status"]] += 1
         return {
             "batch_id": batch_id,
-            "total": len(job_ids),
-            "by_status": by_status,
-            "complete": done == len(job_ids),
-            "job_ids": job_ids,
+            "total": len(ids),
+            "by_status": counts,
+            "complete": all(j["status"] in ("DONE", "FAILED", "EXPIRED") for j in jobs),
+            "job_ids": ids,
             "jobs": jobs,
         }
 
-    def stats(self) -> dict:
-        depth = self._client.llen(self._queue_key)
-        return {"queue_depth": depth, "backend": "redis"}
+    def stats(self):
+        self._client.ping()
+        return {
+            "backend": "redis",
+            "queue_depth": self._client.xlen(self._queue_key),
+            "live_workers": sum(not t.done() for t in self._workers),
+        }
 
-    async def _worker_loop(self, worker_id: int):
-        while not self._stop_flag:
+    async def _heartbeat(self, consumer, message_id):
+        while True:
+            await asyncio.sleep(max(0.05, self._lease_ms / 3000))
+            await asyncio.to_thread(
+                self._client.xclaim,
+                self._queue_key,
+                self._group,
+                consumer,
+                0,
+                [message_id],
+                justid=True,
+            )
+
+    async def _worker_loop(self, worker_id):
+        consumer = f"{self._consumer}:{worker_id}"
+        while True:
             try:
-                item = await asyncio.to_thread(
-                    self._client.brpop,
+                claimed = await asyncio.to_thread(
+                    self._client.xautoclaim,
                     self._queue_key,
-                    2,
+                    self._group,
+                    consumer,
+                    self._lease_ms,
+                    "0-0",
+                    count=1,
                 )
-            except Exception as e:
-                # A transient Redis connection issue must not permanently
-                # kill this worker -- an unhandled exception in an asyncio
-                # task just terminates it silently, quietly reducing worker
-                # capacity with no visible error. Log, back off briefly,
-                # and keep trying.
-                logger.error(
-                    f"Worker {worker_id} lost connection to Redis ({e}); "
-                    f"retrying in 2s."
-                )
-                await asyncio.sleep(2)
-                continue
-
-            if item is None:
-                continue  # timeout, loop back and check _stop_flag
-
-            try:
-                _, raw = item
-                envelope = json.loads(raw)
-                job_id = envelope["job_id"]
-                payload = envelope["payload"]
-            except Exception as e:
-                logger.error(
-                    f"Worker {worker_id} received an unparseable queue item "
-                    f"({e}); dropping it."
-                )
-                continue
-
-            job_key = f"{JOB_KEY_PREFIX}{job_id}"
-
-            try:
-                self._client.hset(job_key, "status", "PROCESSING")
-            except Exception as e:
-                logger.warning(
-                    f"Worker {worker_id} could not mark job {job_id} "
-                    f"PROCESSING ({e}); continuing anyway."
-                )
-
-            try:
-                result = await asyncio.to_thread(self._submit_fn, payload)
-                self._client.hset(
-                    job_key,
-                    mapping={
-                        "status": "DONE",
-                        "result": json.dumps(result),
-                    },
-                )
-            except Exception as e:
-                logger.exception(
-                    f"Job {job_id} failed on worker {worker_id}"
-                )
+                messages = claimed[1]
+                if not messages:
+                    rows = await asyncio.to_thread(
+                        self._client.xreadgroup,
+                        self._group,
+                        consumer,
+                        {self._queue_key: ">"},
+                        count=1,
+                        block=500,
+                    )
+                    messages = rows[0][1] if rows else []
+                if not messages:
+                    continue
+                mid, data = messages[0]
+                envelope = json.loads(data["envelope"])
+                jid, payload = envelope["job_id"], envelope["payload"]
+                key = self._jobkey(jid)
+                heartbeat = asyncio.create_task(self._heartbeat(consumer, mid))
                 try:
-                    self._client.hset(
-                        job_key,
-                        mapping={
-                            "status": "FAILED",
-                            "error": str(e),
-                        },
+                    self._client.hset(key, "status", "PROCESSING")
+                    attempts = self._client.hincrby(key, "attempts", 1)
+                    if attempts > 5:
+                        raise ValueError("Retry budget exhausted")
+                    result = await asyncio.to_thread(self._submit_fn, payload)
+                    result_json, error, status = json.dumps(result), "", "DONE"
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Evaluation job failed")
+                    result_json, error, status = (
+                        "",
+                        "Evaluation failed; inspect server logs",
+                        "FAILED",
                     )
-                except Exception as inner_e:
-                    # Even reporting the failure back to Redis can itself fail
-                    # (e.g. Redis went down mid-job) -- log it, but don't let
-                    # a status-write failure crash the worker either.
-                    logger.error(
-                        f"Worker {worker_id} could not record failure "
-                        f"for job {job_id}: {inner_e}"
-                    )
+                finally:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
+                # Completion and acknowledgement are atomic. If Redis fails before this
+                # transaction, the entry remains pending and is reclaimed after the lease.
+                pipe = self._client.pipeline(transaction=True)
+                pipe.hset(
+                    key,
+                    mapping={"status": status, "result": result_json, "error": error},
+                )
+                pipe.expire(key, JOB_TTL_SECONDS)
+                pipe.xack(self._queue_key, self._group, mid)
+                pipe.xdel(self._queue_key, mid)
+                await asyncio.to_thread(pipe.execute)
+                batch_id = envelope.get("batch_id")
+                if batch_id:
+                    batch = self.get_batch(batch_id)
+                    if batch and batch["complete"]:
+                        self._client.expire(self._batchkey(batch_id), JOB_TTL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Queue dependency failure; pending work remains recoverable"
+                )
+                await asyncio.sleep(1)
 
 
+def make_queue(submit_fn, num_workers=4):
+    backend = os.environ.get("QUEUE_BACKEND", "memory")
+    if os.environ.get("SENTINEL_ENV") == "production" and backend != "postgres":
+        raise RuntimeError("Production requires the authoritative PostgreSQL queue")
+    if backend == "postgres":
+        from app.core.postgres_queue import PostgresEvaluationQueue
 
-def make_queue(submit_fn, num_workers: int = 4):
-    """Factory: returns a RedisEvaluationQueue if QUEUE_BACKEND=redis and
-    Redis is reachable at import/start time, otherwise the in-process
-    EvaluationQueue. Mirrors make_cache()'s fallback behavior in
-    redis_cache.py for the same reason -- dependency-free by default,
-    one env var away from the shared-backend path."""
-    import os
+        return PostgresEvaluationQueue(submit_fn, num_workers)
+    if backend == "redis":
+        # Never silently fall back: replicas must agree on queue ownership.
+        return RedisEvaluationQueue(
+            submit_fn,
+            num_workers,
+            os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        )
+    if backend != "memory":
+        raise RuntimeError("Unknown QUEUE_BACKEND")
     from app.core.job_queue import EvaluationQueue
 
-    backend = os.environ.get("QUEUE_BACKEND", "memory").lower()
-    if backend == "redis":
-        try:
-            url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-            queue = RedisEvaluationQueue(submit_fn=submit_fn, num_workers=num_workers, redis_url=url)
-            queue._client.ping()
-            logger.info("Using Redis-backed evaluation queue.")
-            return queue
-        except Exception as e:
-            logger.warning(f"QUEUE_BACKEND=redis but Redis unavailable ({e}); falling back to in-process queue.")
-    return EvaluationQueue(submit_fn=submit_fn, num_workers=num_workers)
+    return EvaluationQueue(submit_fn, num_workers)

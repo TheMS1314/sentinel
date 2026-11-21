@@ -1,35 +1,26 @@
-"""
-TTL Cache
-==========
-A small in-memory cache with time-based expiry and explicit invalidation.
-
-Design choice -- in-memory, not Redis:
-  At this scale (a single backend instance, a demo/eval workload), an
-  external cache service adds an operational dependency (another thing
-  to start, another thing that can fail) for no real benefit -- there's
-  no multi-instance cache-sharing problem to solve yet. The cache API
-  here is intentionally small enough that swapping the backing store
-  for Redis later (once there's an actual multi-instance deployment) is
-  a contained change: only this file would need to change, nothing that
-  calls it.
-
-Used for:
-  - Policy lookups (GET /policies/{agent_id}) -- policies change rarely
-    but are read on every single transaction evaluation.
-  - The RAG case retriever's per-agent index -- rebuilding it from the
-    full audit history on every escalation is wasteful when most
-    escalations for the same agent happen close together in time.
-"""
+"""Optional TTL cache utility; authorization always reads durable policy state."""
 
 from __future__ import annotations
 import time
+import math
+from collections import OrderedDict
 from threading import Lock
 
 
 class TTLCache:
-    def __init__(self, ttl_seconds: float = 30.0):
+    def __init__(self, ttl_seconds: float = 30.0, max_entries: int = 1024):
+        if (
+            not math.isfinite(ttl_seconds)
+            or ttl_seconds <= 0
+            or type(max_entries) is not int
+            or max_entries < 1
+        ):
+            raise ValueError(
+                "Cache needs a finite positive TTL and positive entry bound"
+            )
         self.ttl = ttl_seconds
-        self._store: dict[str, tuple[float, object]] = {}
+        self.max_entries = max_entries
+        self._store = OrderedDict()
         self._lock = Lock()
 
     def get(self, key: str):
@@ -38,14 +29,24 @@ class TTLCache:
             if entry is None:
                 return None
             expires_at, value = entry
-            if time.time() > expires_at:
+            if time.monotonic() >= expires_at:
                 del self._store[key]
                 return None
+            self._store.move_to_end(key)
             return value
 
     def set(self, key: str, value):
         with self._lock:
-            self._store[key] = (time.time() + self.ttl, value)
+            now = time.monotonic()
+            self._prune(now)
+            self._store[key] = (now + self.ttl, value)
+            self._store.move_to_end(key)
+            while len(self._store) > self.max_entries:
+                self._store.popitem(last=False)
+
+    def _prune(self, now):
+        for key in [k for k, (expiry, _) in self._store.items() if expiry <= now]:
+            del self._store[key]
 
     def invalidate(self, key: str):
         with self._lock:
@@ -63,28 +64,5 @@ class TTLCache:
 
     def stats(self) -> dict:
         with self._lock:
-            now = time.time()
-            live = sum(1 for exp, _ in self._store.values() if exp > now)
-            return {"total_entries": len(self._store), "live_entries": live}
-
-
-# Module-level singletons.
-#
-# policy_cache: JSON-safe values (plain dicts), so it CAN move to Redis
-# via CACHE_BACKEND=redis for a shared cache across multiple backend
-# replicas -- see redis_cache.py.
-#
-# case_index_cache: intentionally ALWAYS in-memory, never Redis, even
-# when CACHE_BACKEND=redis is set. It stores a fitted scikit-learn
-# TfidfVectorizer and a sparse matrix -- neither is JSON-serializable,
-# and pickling arbitrary sklearn objects into a shared cache is its own
-# can of worms (version skew between replicas, deserialization trust).
-# Recomputing this index per-process is cheap enough (see case_retriever.py)
-# that each replica keeping its own is the right tradeoff, not a gap.
-def _init_policy_cache():
-    from app.core.redis_cache import make_cache
-    return make_cache(ttl_seconds=60.0, key_prefix="sentinel:policy:")
-
-
-policy_cache = _init_policy_cache()
-case_index_cache = TTLCache(ttl_seconds=15.0)
+            self._prune(time.monotonic())
+            return {"total_entries": len(self._store), "live_entries": len(self._store)}

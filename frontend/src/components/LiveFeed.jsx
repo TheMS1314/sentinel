@@ -1,7 +1,7 @@
 import { VerdictBadge, Pill } from "./Badges";
 import { humanizeScenarioTag } from "../scenarioLabels";
 import { useState } from "react";
-import { Zap, Bot, ScrollText, Clock, Inbox, Search, X, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
+import { ShieldCheck, Zap, Bot, ScrollText, Clock, Inbox, Search, X, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 
 const VERDICT_EDGE = {
   APPROVE: "before:bg-approve",
@@ -41,6 +41,7 @@ function formatRelative(iso) {
 }
 
 function DecisionSource({ decidedBy }) {
+  if (decidedBy === "risk_intelligence") return <Pill muted icon={ShieldCheck}>risk intelligence</Pill>;
   if (decidedBy === "llm_reasoner") {
     return <Pill muted icon={Bot}>LLM reasoner</Pill>;
   }
@@ -60,10 +61,19 @@ function TransactionDetails({ tx }) {
     ["Request ID", tx.request_id],
     ["Agent", tx.agent_id],
     ["Category", tx.merchant_category],
+    ["Merchant ID", tx.merchant_id || "Legacy assertion"],
+    ["Merchant version", tx.merchant_version || "—"],
     ["Decided by", tx.decided_by || "—"],
-    ["Confidence", tx.confidence != null ? `${(tx.confidence * 100).toFixed(0)}%` : "—"],
+    ["Model self-confidence", tx.confidence != null ? `${(tx.confidence * 100).toFixed(0)}%` : "—"],
     ["Model", tx.model_version || "—"],
+    ["Risk score (heuristic)", tx.risk_score == null ? "—" : `${tx.risk_score}/100`],
+    ["Policy version", tx.policy_version || "—"],
+    ["Reasoner mode", tx.llm_mode || "—"],
+
     ["Razorpay status", tx.razorpay_status || "—"],
+    ["Intelligence coverage", tx.intelligence?.coverage || "Not assessed"],
+    ["Vendor evidence", tx.intelligence?.vendor?.status || "Unknown"],
+    ["Threat evidence", tx.intelligence?.threat?.status || "Not assessed"],
     ["Stated intent", tx.stated_intent || "—"],
   ];
   return (
@@ -100,12 +110,16 @@ function TransactionDetails({ tx }) {
         </div>
       )}
       </div>
+      {tx.intelligence?.signals?.length > 0 && <ul className="mt-3 text-xs text-textmuted">{tx.intelligence.signals.map((signal, index) => <li key={index}>{signal}</li>)}</ul>}
+      {tx.razorpay_status === "guard_hold" && <p className="mt-2 text-xs text-hold">Payment dispatch paused; approval is not settlement. Budget remains reserved.</p>}
     </div>
   );
 }
 
 export default function LiveFeed({
   transactions,
+  pendingHolds = [],
+  canReview = false,
   onResolveHold,
   scenarioTags = [],
   scenarioFilter,
@@ -281,15 +295,17 @@ export default function LiveFeed({
 
                 {isOpen && <TransactionDetails tx={tx} />}
 
-                {tx.verdict === "HOLD" && !tx.human_override && (
+                {canReview && tx.verdict === "HOLD" && !tx.human_override && (
                   <div className="mt-3 flex gap-2">
                     <button
+                      disabled={pendingHolds.includes(tx.request_id)}
                       onClick={() => onResolveHold(tx.request_id, "APPROVE")}
                       className="px-3 py-1.5 rounded-md text-[12px] font-medium bg-approve/[0.08] text-approve border border-approve/25 hover:bg-approve/15 hover:border-approve/40 transition-colors"
                     >
                       Approve
                     </button>
                     <button
+                      disabled={pendingHolds.includes(tx.request_id)}
                       onClick={() => onResolveHold(tx.request_id, "BLOCK")}
                       className="px-3 py-1.5 rounded-md text-[12px] font-medium bg-block/[0.08] text-block border border-block/25 hover:bg-block/15 hover:border-block/40 transition-colors"
                     >

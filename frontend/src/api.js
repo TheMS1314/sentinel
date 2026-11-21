@@ -1,8 +1,4 @@
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-// Dev-only: matches the dev-mode fallback the backend uses when
-// SENTINEL_API_KEY is unset. In any real deployment this should come
-// from a build-time env var, never hardcoded like this.
-const API_KEY = import.meta.env.VITE_SENTINEL_API_KEY || "dev-only-insecure-key-change-me";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 const REQUEST_TIMEOUT_MS = 15000;
 
 class ApiError extends Error {
@@ -18,8 +14,9 @@ async function request(path, options = {}) {
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     res = await fetch(`${BASE_URL}${path}`, {
-      headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+      headers: { "Content-Type": "application/json", "X-Sentinel-CSRF": "1" },
       signal: controller.signal,
+      credentials: "include",
       ...options,
     });
   } catch (err) {
@@ -33,6 +30,7 @@ async function request(path, options = {}) {
     clearTimeout(timeoutId);
   }
   if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event("sentinel:unauthorized"));
     let message = `Request failed (${res.status})`;
     try {
       const body = await res.json();
@@ -56,6 +54,21 @@ function qs(params) {
 }
 
 export const api = {
+  listMerchants: () => request("/merchants"),
+  saveMerchant: (body) => request("/merchants", {method:"POST",body:JSON.stringify(body)}),
+  providers: () => request('/providers'),
+  bindProvider: body => request('/providers/bindings',{method:'POST',body:JSON.stringify(body)}),
+  refreshProvider: id => request(`/providers/bindings/${id}/refresh`,{method:'POST'}),
+  opsSummary: () => request('/ops/summary'),
+  opsIncidents: () => request('/ops/incidents'),
+  opsAlerts: () => request('/ops/alerts'),
+  opsUpdate: (id, body) => request(`/ops/incidents/${id}`, {method:'POST',body:JSON.stringify(body)}),
+  opsRetry: (id, body) => request(`/ops/alerts/${id}/retry`, {method:'POST',body:JSON.stringify(body)}),
+  listCredentials: () => request("/credentials"),
+  changeCredential: (body) => request("/credentials", {method:"POST",body:JSON.stringify(body)}),
+  login: (credential) => request("/auth/login", {method: "POST", body: JSON.stringify({credential})}),
+  me: () => request("/auth/me"),
+  logout: () => request("/auth/logout", {method: "POST"}),
   ApiError,
   createPolicy: (policy) => request("/policies", { method: "POST", body: JSON.stringify(policy) }),
   listPolicies: () => request("/policies"),
@@ -75,4 +88,9 @@ export const api = {
       body: JSON.stringify({ human_verdict: humanVerdict }),
     }),
   evalReport: () => request("/eval/report"),
+  riskOverview: () => request("/risk/overview"),
+  cancelPendingPayment: ({requestId, reason}) => request(`/payments/${requestId}/cancel`, {method: "POST", body: JSON.stringify({reason})}),
+  saveRiskGuard: (body) => request("/risk/guard", {method: "POST", body: JSON.stringify(body)}),
+  saveMerchantRisk: (body) => request("/risk/merchants", {method: "POST", body: JSON.stringify(body)}),
+  saveThreatIndicator: (body) => request("/risk/indicators", {method: "POST", body: JSON.stringify(body)}),
 };

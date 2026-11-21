@@ -68,6 +68,16 @@ def _req(i: int, **overrides) -> dict:
     r = dict(BASE_REQUEST)
     r["request_id"] = f"hard_req_{i:03d}"
     r.update(overrides)
+    from datetime import datetime
+
+    if "requested_at_iso" in overrides and "requested_at_hour" not in overrides:
+        r["requested_at_hour"] = datetime.fromisoformat(r["requested_at_iso"]).hour
+    else:
+        r["requested_at_iso"] = (
+            datetime.fromisoformat(r["requested_at_iso"])
+            .replace(hour=r["requested_at_hour"])
+            .isoformat()
+        )
     return r
 
 
@@ -79,24 +89,30 @@ def build_dataset() -> list:
     should_still_block = ["shadystore", "SHADYSTORE", "  ShadyStore  ", "ShAdYsToRe"]
     for variant in should_still_block:
         i += 1
-        cases.append(HardCase(
-            case_id=f"hard_{i:03d}", category="merchant_near_miss",
-            policy_overrides={"blocked_merchants": [blocked_name]},
-            request=_req(i, merchant_name=variant),
-            expected_verdict="BLOCK",
-            notes=f"Case/whitespace variant of blocked merchant '{blocked_name}' -- must still be caught after normalization fix.",
-        ))
+        cases.append(
+            HardCase(
+                case_id=f"hard_{i:03d}",
+                category="merchant_near_miss",
+                policy_overrides={"blocked_merchants": [blocked_name]},
+                request=_req(i, merchant_name=variant),
+                expected_verdict="BLOCK",
+                notes=f"Case/whitespace variant of blocked merchant '{blocked_name}' -- must still be caught after normalization fix.",
+            )
+        )
 
     should_not_block = ["ShadyStore2", "ShadyStoreOutlet", "NotShadyStore"]
     for variant in should_not_block:
         i += 1
-        cases.append(HardCase(
-            case_id=f"hard_{i:03d}", category="merchant_near_miss",
-            policy_overrides={"blocked_merchants": [blocked_name]},
-            request=_req(i, merchant_name=variant),
-            expected_verdict="APPROVE",
-            notes=f"Genuinely different name from '{blocked_name}' -- correctly NOT blocked; catching this needs fuzzy matching, out of scope (false-positive risk).",
-        ))
+        cases.append(
+            HardCase(
+                case_id=f"hard_{i:03d}",
+                category="merchant_near_miss",
+                policy_overrides={"blocked_merchants": [blocked_name]},
+                request=_req(i, merchant_name=variant),
+                expected_verdict="APPROVE",
+                notes=f"Genuinely different name from '{blocked_name}' -- correctly NOT blocked; catching this needs fuzzy matching, out of scope (false-positive risk).",
+            )
+        )
 
     semantic_cases = [
         ("pick up something nice for the team", "grocery", False),
@@ -107,69 +123,104 @@ def build_dataset() -> list:
     ]
     for intent, category, leans_ok in semantic_cases:
         i += 1
-        cases.append(HardCase(
-            case_id=f"hard_{i:03d}", category="semantic_drift_no_kw",
-            policy_overrides={},
-            request=_req(i, stated_intent=intent, merchant_category=category),
-            expected_verdict="APPROVE" if leans_ok else "HOLD",
-            is_judgment_call=True,
-            notes="Genuinely ambiguous intent with no injection language and no strong keyword overlap -- "
-                  "a judgment call requiring real semantic understanding, not string matching.",
-        ))
+        cases.append(
+            HardCase(
+                case_id=f"hard_{i:03d}",
+                category="semantic_drift_no_kw",
+                policy_overrides={},
+                request=_req(i, stated_intent=intent, merchant_category=category),
+                expected_verdict="APPROVE" if leans_ok else "HOLD",
+                is_judgment_call=True,
+                notes="Genuinely ambiguous intent with no injection language and no strong keyword overlap -- "
+                "a judgment call requiring real semantic understanding, not string matching.",
+            )
+        )
 
     for j in range(3):
         i += 1
         history = [
-            _req(i, request_id=f"hard_hist_{i:03d}_{k}", amount=195.0 + k * 4,
-                 requested_at_hour=10, merchant_name="FreshMart",
-                 requested_at_iso=f"2026-08-24T{9+k:02d}:00:00")
+            _req(
+                i,
+                request_id=f"hard_hist_{i:03d}_{k}",
+                amount=195.0 + k * 4,
+                requested_at_hour=10,
+                merchant_name="FreshMart",
+                requested_at_iso=f"2026-08-24T{9 + k:02d}:00:00",
+            )
             for k in range(6)
         ]
-        cases.append(HardCase(
-            case_id=f"hard_{i:03d}", category="compound_weak_signals",
-            policy_overrides={},
-            request=_req(i, amount=260.0 + j * 10, requested_at_hour=16 + j, merchant_name="NewCornerShop"),
-            history=history,
-            expected_verdict="HOLD",
-            notes="No single signal (amount/timing/merchant) is extreme alone -- tests whether the "
-                  "composite risk scorer catches the combination.",
-        ))
+        cases.append(
+            HardCase(
+                case_id=f"hard_{i:03d}",
+                category="compound_weak_signals",
+                policy_overrides={"velocity_max_count": 100},
+                request=_req(
+                    i,
+                    amount=210.0 + j * 2,
+                    requested_at_hour=16 + j,
+                    merchant_name="NewCornerShop",
+                ),
+                history=history,
+                expected_verdict="HOLD",
+                notes="No single signal (amount/timing/merchant) is extreme alone -- tests whether the "
+                "composite risk scorer catches the combination.",
+            )
+        )
 
     history = []
     for k in range(10):
-        history.append(_req(
-            9000 + k, request_id=f"hard_drift_hist_{k}",
-            amount=200.0 + k * 20,
-            requested_at_hour=14,
-            requested_at_iso=f"2026-08-{20+k:02d}T14:00:00",
-        ))
+        history.append(
+            _req(
+                9000 + k,
+                request_id=f"hard_drift_hist_{k}",
+                amount=200.0 + k * 20,
+                requested_at_hour=14,
+                requested_at_iso=f"2026-08-{20 + k:02d}T14:00:00",
+            )
+        )
     i += 1
-    cases.append(HardCase(
-        case_id=f"hard_{i:03d}", category="gradual_drift_tolerance",
-        # velocity_window_minutes=60 means only transactions within the last
-        # HOUR count toward velocity -- realistic for "one purchase per day
-        # over 10 days" history, which should never trip a same-day burst
-        # check. max_daily_total raised so the daily-cap check (which is
-        # legitimately a same-day concept) doesn't interfere either -- this
-        # case is specifically about the BEHAVIORAL baseline, not the other
-        # two checks, so both are deliberately loosened to isolate it.
-        policy_overrides={"velocity_max_count": 50, "velocity_window_minutes": 60, "max_daily_total": 50000.0},
-        request=_req(i, amount=400.0, requested_at_hour=14),
-        history=history,
-        expected_verdict="APPROVE",
-        is_judgment_call=True,
-        notes="A gradually-established new normal (200 -> 380 over 10 approved transactions, one per day) -- a real "
-              "system should recognize 400 as a continuation of the trend. Honest stress test of a known "
-              "limitation (the baseline weighs all approved history equally, not recency-weighted) -- "
-              "expected to potentially fail, which is the point.",
-    ))
+    cases.append(
+        HardCase(
+            case_id=f"hard_{i:03d}",
+            category="gradual_drift_tolerance",
+            # velocity_window_minutes=60 means only transactions within the last
+            # HOUR count toward velocity -- realistic for "one purchase per day
+            # over 10 days" history, which should never trip a same-day burst
+            # check. max_daily_total raised so the daily-cap check (which is
+            # legitimately a same-day concept) doesn't interfere either -- this
+            # case is specifically about the BEHAVIORAL baseline, not the other
+            # two checks, so both are deliberately loosened to isolate it.
+            policy_overrides={
+                "velocity_max_count": 50,
+                "velocity_window_minutes": 60,
+                "max_daily_total": 50000.0,
+            },
+            request=_req(
+                i,
+                amount=400.0,
+                requested_at_hour=14,
+                requested_at_iso="2026-08-30T14:00:00",
+            ),
+            history=history,
+            expected_verdict="APPROVE",
+            is_judgment_call=True,
+            notes="A gradually-established new normal (200 -> 380 over 10 approved transactions, one per day) -- a real "
+            "system should recognize 400 as a continuation of the trend. Honest stress test of a known "
+            "limitation (the baseline weighs all approved history equally, not recency-weighted) -- "
+            "expected to potentially fail, which is the point.",
+        )
+    )
 
     return cases
 
 
 def save_dataset(path: str = None):
     if path is None:
-        path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "hard_dataset.json"))
+        path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__), "..", "..", "data", "hard_dataset.json"
+            )
+        )
     cases = build_dataset()
     with open(path, "w") as f:
         json.dump([asdict(c) for c in cases], f, indent=2)
@@ -180,10 +231,13 @@ if __name__ == "__main__":
     path, count = save_dataset()
     print(f"Wrote {count} hard cases to {path}")
     from collections import Counter
+
     cases = build_dataset()
     by_category = Counter(c.category for c in cases)
     judgment_calls = sum(1 for c in cases if c.is_judgment_call)
-    print(f"\nJudgment calls (genuinely ambiguous, not hard facts): {judgment_calls}/{count}")
+    print(
+        f"\nJudgment calls (genuinely ambiguous, not hard facts): {judgment_calls}/{count}"
+    )
     print("\nBy category:")
     for cat, n in sorted(by_category.items()):
         print(f"  {cat:28} {n}")

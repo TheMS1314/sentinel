@@ -1,0 +1,95 @@
+{
+  "implementation_sha": "8d0820175a5ce81a3fa2783a8c17132fd6bdd677",
+  "workflow_url": "https://github.com/TheMS1314/sentinel/actions/runs/44100786661",
+  "date": "2026-11-17",
+  "backend_tests_passed": 282,
+  "frontend_tests_passed": 19,
+  "jobs": {
+    "containers": {
+      "id": 134099910239,
+      "conclusion": "success"
+    },
+    "deployment-gateway": {
+      "id": 134099910573,
+      "conclusion": "success"
+    },
+    "frontend": {
+      "id": 134099910641,
+      "conclusion": "success"
+    },
+    "backend": {
+      "id": 134099910953,
+      "conclusion": "success"
+    }
+  },
+  "envoy_gateway_version": "v1.10.0",
+  "gateway_api": "v1",
+  "application_container_checks": [
+    "built_frontend",
+    "policy_create",
+    "approve",
+    "replay",
+    "changed_replay_conflicts",
+    "hard_cap",
+    "merchant_directory_registration",
+    "merchant_category_cannot_be_spoofed",
+    "http_concurrency",
+    "shared_credential_issue",
+    "shared_credential_authentication",
+    "shared_credential_revoke",
+    "revocation_reaches_all_replicas",
+    "freeze",
+    "frozen_approval",
+    "cancel_undispatched",
+    "unfreeze",
+    "durable_batch_accepted",
+    "quota_outage_fails_closed",
+    "liveness_survives_quota_outage",
+    "readiness_reports_quota_outage",
+    "accepted_jobs_survive_redis_outage",
+    "database_outage_fails_closed",
+    "liveness_survives_database_outage",
+    "readiness_reports_database_outage",
+    "database_restart_recovery",
+    "one_backend_down",
+    "backend_recreation_dns",
+    "backup_restore_records_and_schema",
+    "restricted_runtime_database_authority",
+    "incident_create",
+    "signed_https_alert_delivered",
+    "https_sink_received_unique_event",
+    "protected_operational_metrics",
+    "scheduled_provider_merchant",
+    "scheduled_provider_binding",
+    "scheduled_provider_missing_key_is_explicit",
+    "scheduled_provider_absence_holds_payment",
+    "scheduled_provider_replica_claim_is_unique"
+  ],
+  "gateway_checks": [
+    "gateway_routes_accepted_and_references_resolved",
+    "http_redirects_to_exact_https_host",
+    "https_certificate_validated_and_fixture_frontend_routed",
+    "https_hsts_header",
+    "https_api_prefix_routed",
+    "public_health_is_gateway_only",
+    "dependency_probes_not_public",
+    "unknown_http_host_not_redirected",
+    "mismatched_https_host_rejected",
+    "untrusted_certificate_rejected",
+    "tls_secret_rotation_reloaded"
+  ],
+  "scope": {
+    "application": "Actual Sentinel/SQL/Redis/replicas in Compose",
+    "gateway": "Actual Envoy controller, rendered nginx proxy and temporary CA with synthetic upstream fixtures",
+    "certificate_rotation": "TLS Secret replacement and observed peer-certificate fingerprint change",
+    "not_proven": [
+      "Full Sentinel Kubernetes application rollout",
+      "Production cloud/load-balancer/DNS/certificate issuer or renewal",
+      "Multi-zone HA/failover",
+      "Licensed/provider contracts",
+      "Representative model quality/calibration",
+      "Live-money capture/settlement"
+    ]
+  },
+  "main_merged": false
+}
