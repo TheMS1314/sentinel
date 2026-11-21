@@ -13,7 +13,7 @@ complete and consistent.
 
 from __future__ import annotations
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_, and_
+from sqlalchemy import func, or_, and_, case
 from datetime import timedelta
 from app.core.validation import utc_timestamp
 from app.core.intelligence import processing_time
@@ -139,17 +139,29 @@ class AuditLogger:
             )
         return items
 
-    def evaluation_context(self, request, policy):
-        timestamp = utc_timestamp(request.requested_at_iso)
-        day = timestamp.date().isoformat()
-        reserved = (
-            self.db.query(func.coalesce(func.sum(PaymentRecord.amount_paise), 0))
+    def budget_totals(self, agent_id, day):
+        committed, captured = (
+            self.db.query(
+                func.coalesce(func.sum(PaymentRecord.amount_paise), 0),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                PaymentRecord.state == "captured",
+                                PaymentRecord.amount_paise,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            )
             .join(
                 TransactionRecord,
                 TransactionRecord.request_id == PaymentRecord.request_id,
             )
             .filter(
-                TransactionRecord.agent_id == request.agent_id,
+                TransactionRecord.agent_id == agent_id,
                 PaymentRecord.state.in_(
                     ["pending", "processing", "unknown", "created", "mock", "captured"]
                 ),
@@ -161,7 +173,14 @@ class AuditLogger:
                     ),
                 ),
             )
-            .scalar()
+            .one()
+        )
+        return int(committed), int(captured)
+
+    def evaluation_context(self, request, policy):
+        timestamp = utc_timestamp(request.requested_at_iso)
+        committed, _ = self.budget_totals(
+            request.agent_id, timestamp.date().isoformat()
         )
         count = (
             self.db.query(func.count(TransactionRecord.id))
@@ -181,4 +200,4 @@ class AuditLogger:
             before=timestamp.isoformat(),
             approved_only=True,
         )
-        return history, int(reserved), int(count)
+        return history, committed, int(count)

@@ -33,6 +33,7 @@ binary check would miss entirely.
 """
 
 from __future__ import annotations
+from app.core.validation import merchant_key
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -134,11 +135,11 @@ class RiskScorer:
         )
 
         known_merchants = {
-            item.request.merchant_name.strip().casefold() for item in approved_items
+            merchant_key(item.request.merchant_name) for item in approved_items
         }
         merchant_points = (
             0.0
-            if request.merchant_name.strip().casefold() in known_merchants
+            if merchant_key(request.merchant_name) in known_merchants
             else MERCHANT_WEIGHT
         )
         components.append(

@@ -66,6 +66,8 @@ npm run dev
 
 Vite proxies `/api` to the local backend. Never put an API key in `VITE_` variables. Only non-secret frontend configuration belongs there.
 
+The [developer quickstart](docs/DEVELOPER_QUICKSTART.md) runs an isolated payment flow through the HTTP API and shows what each decision does to the budget.
+
 ## Access configuration
 
 `SENTINEL_CREDENTIALS` is a server-side JSON array. Every entry needs a unique 32+ character key, unique subject, and role:
@@ -86,7 +88,7 @@ Compose uses shared database authority: the initialization job seeds the configu
 | Area | Routes |
 |---|---|
 | Session | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout` |
-| Policies | `POST /policies`, `GET /policies`, `GET /policies/{agent_id}` |
+| Policies | `POST /policies`, `GET /policies`, `GET /policies/{agent_id}`, `GET /policies/{agent_id}/budget` |
 | Transactions | `POST /transactions/evaluate`, `POST /transactions/evaluate-batch`, feed/search/pagination/summary/scenarios |
 | Background work | `GET /jobs`, `GET /jobs/{job_id}`, `GET /jobs/batch/{batch_id}` |
 | Simulations | `POST /simulate`, `POST /simulate-async` (disabled in production profile) |

@@ -1,8 +1,8 @@
 """Local, explainable risk enrichment; no proprietary provider data is fabricated."""
 
 from datetime import datetime, timedelta, timezone
-import unicodedata
 from sqlalchemy import func, text
+from app.core.validation import merchant_key
 from app.models.db import (
     MerchantRiskProfile,
     ThreatIndicator,
@@ -14,10 +14,6 @@ from app.models.db import (
 )
 
 GUARD_LOCK = "__sentinel_dispatch_guard_v1__"
-
-
-def merchant_key(name):
-    return " ".join(unicodedata.normalize("NFKC", name).casefold().split())
 
 
 def utc(value):

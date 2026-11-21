@@ -3,6 +3,12 @@
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import re
+import unicodedata
+
+
+def merchant_key(name: str) -> str:
+    """Compare names consistently while preserving punctuation and word boundaries."""
+    return " ".join(unicodedata.normalize("NFKC", name).casefold().split())
 
 
 def paise(value) -> int:

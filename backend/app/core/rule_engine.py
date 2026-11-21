@@ -23,7 +23,7 @@ when a human should confirm before anything happens.
 from __future__ import annotations
 from datetime import timedelta
 import re
-from app.core.validation import paise, utc_timestamp
+from app.core.validation import merchant_key, paise, utc_timestamp
 from dataclasses import dataclass
 
 from app.models.policy import (
@@ -83,9 +83,8 @@ class RuleEngine:
             return RuleEngineResult(VERDICT_BLOCK, reasons, checked)
 
         # --- 2. Daily total cap ---
-        # Only counts transactions that actually moved money (APPROVE, or a
-        # HOLD later approved by a human) -- a blocked or still-pending
-        # attempt never spent anything and must not count against the cap.
+        # Count commitments as well as captures. Unresolved holds and blocked
+        # attempts never create reservations and do not consume allowance.
         checked.append("max_daily_total")
         today_total_paise = sum(
             paise(item.request.amount)
@@ -111,23 +110,11 @@ class RuleEngine:
             )
 
         # --- 3. Merchant allowlist (strict mode, if configured) ---
-        # Normalized comparison (case-fold + strip whitespace) -- an exact
-        # byte-for-byte match would let a blocked merchant trivially evade
-        # the check via different casing or stray whitespace (found via a
-        # targeted adversarial eval: 'shadystore', 'ShadyStore ', and
-        # 'SHADYSTORE' all bypassed an exact match against 'ShadyStore').
-        # This does NOT catch a genuinely different name like
-        # 'ShadyStore2' -- that would need fuzzy/substring matching, which
-        # has its own false-positive risk (a legitimate merchant whose name
-        # happens to contain a blocked substring) and is deliberately not
-        # implemented here; documented as a known follow-up, not silently
-        # assumed to be covered.
+        # Use the same exact canonical name as the local risk profiles.
         checked.append("merchant_allowlist")
-        normalized_merchant = request.merchant_name.strip().casefold()
+        normalized_merchant = merchant_key(request.merchant_name)
         if policy.allowed_merchants is not None:
-            allowed_normalized = {
-                m.strip().casefold() for m in policy.allowed_merchants
-            }
+            allowed_normalized = {merchant_key(m) for m in policy.allowed_merchants}
             if normalized_merchant not in allowed_normalized:
                 reasons.append(
                     f"Merchant '{request.merchant_name}' is not on the "
@@ -137,7 +124,7 @@ class RuleEngine:
 
         # --- 4. Merchant blocklist ---
         checked.append("merchant_blocklist")
-        blocked_normalized = {m.strip().casefold() for m in policy.blocked_merchants}
+        blocked_normalized = {merchant_key(m) for m in policy.blocked_merchants}
         if normalized_merchant in blocked_normalized:
             reasons.append(
                 f"Merchant '{request.merchant_name}' is explicitly blocked "

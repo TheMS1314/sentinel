@@ -387,6 +387,11 @@ def test_signed_capture_webhook_and_duplicate(db, monkeypatch):
         "X-Razorpay-Event-Id": uid(),
     }
     with TestClient(app) as c:
+        path = f"/policies/{p.agent_id}/budget"
+        caller = {"X-API-Key": "test-key-contracts"}
+        before = c.get(path, headers=caller).json()
+        assert before["committed_paise"] == before["reserved_paise"] == 50000
+        assert before["captured_paise"] == 0
         assert c.post("/payments/webhook", content=raw).status_code == 401
         assert (
             c.post("/payments/webhook", content=raw, headers=headers).json()["status"]
@@ -396,6 +401,10 @@ def test_signed_capture_webhook_and_duplicate(db, monkeypatch):
             c.post("/payments/webhook", content=raw, headers=headers).json()["status"]
             == "duplicate"
         )
+        after = c.get(path, headers=caller).json()
+        assert after["committed_paise"] == after["captured_paise"] == 50000
+        assert after["reserved_paise"] == 0
+        assert after["available_paise"] == before["available_paise"]
     db.expire_all()
     assert db.get(PaymentRecord, req.request_id).state == "captured"
 

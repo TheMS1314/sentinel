@@ -47,7 +47,9 @@ from app.core.auth import (
 from app.core.rate_limit import enforce_rate_limit
 from app.core.logging_middleware import StructuredLoggingMiddleware
 from app.core.locking import agent_transaction
+from app.core.audit_logger import AuditLogger
 from app.core.intelligence import processing_time
+from app.core.validation import paise
 from app.core.orchestrator import SentinelOrchestrator, ConflictError
 from app.core.schemas import (
     PolicyIn,
@@ -592,6 +594,29 @@ def get_latest_policy(
         "policy_id": policy.policy_id,
         "policy": policy.to_dict(),
         "version": policy.version,
+    }
+
+
+@secured.get("/policies/{agent_id}/budget")
+def get_policy_budget(
+    agent_id: str,
+    db: Session = Depends(get_session),
+    principal: Principal = Depends(require_api_key),
+):
+    require_agent(principal, agent_id, db)
+    policy = load_policy(agent_id, db)
+    day = processing_time(db).date().isoformat()
+    committed, captured = AuditLogger(db).budget_totals(agent_id, day)
+    cap = paise(policy.max_daily_total)
+    return {
+        "agent_id": agent_id,
+        "policy_version": policy.version,
+        "budget_day_utc": day,
+        "daily_cap_paise": cap,
+        "committed_paise": committed,
+        "reserved_paise": committed - captured,
+        "captured_paise": captured,
+        "available_paise": max(0, cap - committed),
     }
 
 
